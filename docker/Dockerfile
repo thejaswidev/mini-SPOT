@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libx11-6 \
     libxext6 \
     libxrender1 \
+    libosmesa6-dev \
     # General utilities
     build-essential \
     git \
@@ -72,8 +73,8 @@ RUN pip install --no-cache-dir \
 # MUJOCO_GL=egl     → headless
 # Override at runtime: docker run -e MUJOCO_GL=egl ...
 # -----------------------------------------------------------------------------
-ENV MUJOCO_GL=glfw
-ENV PYOPENGL_PLATFORM=glx
+ENV MUJOCO_GL=osmesa
+ENV PYOPENGL_PLATFORM=osmesa
 
 # -----------------------------------------------------------------------------
 # WORKSPACE
@@ -82,4 +83,11 @@ WORKDIR /workspace
 ENV PYTHONPATH=/workspace
 ENV PYTHONUNBUFFERED=1
 
+
+ARG UID=1000
+ARG GID=1000
+RUN groupadd -g ${GID} m_spot && \
+    useradd -m -u ${UID} -g ${GID} m_spot
+
+USER m_spot
 CMD ["bash"]

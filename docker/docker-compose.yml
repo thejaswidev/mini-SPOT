@@ -22,9 +22,6 @@ services:
       dockerfile: docker/Dockerfile
 
     image: mini-spot:latest
-
-    container_name: mini-spot
-
     # -------------------------------------------------------------------------
     # DISPLAY
     # Lets MuJoCo open a window on your screen.
@@ -32,7 +29,7 @@ services:
     # -------------------------------------------------------------------------
     environment:
       - DISPLAY=${DISPLAY}
-      - MUJOCO_GL=glfw
+      - MUJOCO_GL=osmesa
       - PYTHONPATH=/workspace
 
     # -------------------------------------------------------------------------
@@ -42,7 +39,7 @@ services:
     # The second line gives the container access to your screen (X11).
     # -------------------------------------------------------------------------
     volumes:
-      - .:/workspace
+      - ..:/workspace
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
 
     # -------------------------------------------------------------------------

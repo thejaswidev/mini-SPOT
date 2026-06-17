@@ -1,8 +1,8 @@
-# Mini-SPOT 
+# Mini-SPOT
 
 A miniature quadruped robot inspired by Boston Dynamics Spot.
 
-The goal is a fully autonomous legged robot: simulation, kinematics, gait control, and real hardware deployment.
+The goal is a fully autonomous legged robot: simulation, kinematics, gait control, and real hardware deployment. 
 
 ---
 
@@ -14,11 +14,13 @@ The goal is a fully autonomous legged robot: simulation, kinematics, gait contro
 | Servo controller | PCA9685 (I2C, 16-channel PWM) |
 | Servos | 12 total — 3 per leg (HAA, HFE, KFE joints) |
 | Battery | LiPo |
-| IMU | Basic IMU |
+| IMU | Basic IMU (simulation only for now) |
 | Onboard compute (planned) | NVIDIA Jetson Nano |
 
 
-4 legs × 3 joints = 12 servos total. Each leg has full 3-DOF — Hip Abduction/Adduction, Hip Flexion/Extension, Knee Flexion/Extension.
+4 legs × 3 joints = 12 servos total. Each leg has full 3-DOF — Hip Abduction/Adduction (HAA), Hip Flexion/Extension (HFE), Knee Flexion/Extension (KFE).
+
+HAA joints are currently locked in simulation — 8 active DOF (HFE + KFE per leg). This simplifies IK to a clean 2D problem per leg.
 
 ---
 
@@ -26,9 +28,9 @@ The goal is a fully autonomous legged robot: simulation, kinematics, gait contro
 
 | Session | Focus | Status |
 |---|---|---|
-| 1 | Docker environment + GitHub setup | 🔄 In progress |
-| 2 | MJCF robot model in MuJoCo | ⬜ Pending |
-| 3 | Inverse Kinematics solver | ⬜ Pending |
+| 1 | Docker environment + GitHub setup | ✅ Complete |
+| 2 | MJCF robot model in MuJoCo | ✅ Complete |
+| 3 | Inverse Kinematics solver | 🔄 In progress |
 | 4 | Bezier trajectory generator | ⬜ Pending |
 | 5 | Gait scheduler (trot) | ⬜ Pending |
 | 6 | Full locomotion controller — Mini-SPOT walks | ⬜ Pending |
@@ -50,8 +52,8 @@ The goal is a fully autonomous legged robot: simulation, kinematics, gait contro
 ```bash
 git clone https://github.com/harsh-dudhatra/mini-SPOT
 cd mini-SPOT
-chmod +x setup.sh
-./setup.sh
+chmod +x run.sh
+./run.sh
 ```
 
 **macOS:**
@@ -60,8 +62,8 @@ Install [XQuartz](https://www.xquartz.org) first, then:
 xhost +localhost
 git clone https://github.com/harsh-dudhatra/mini-SPOT
 cd mini-SPOT
-chmod +x setup.sh
-./setup.sh
+chmod +x run.sh
+./run.sh
 ```
 
 **Windows:**
@@ -69,9 +71,19 @@ Install [VcXsrv](https://sourceforge.net/projects/vcxsrv/), launch XLaunch with 
 ```bash
 git clone https://github.com/harsh-dudhatra/mini-SPOT
 cd mini-SPOT
-chmod +x setup.sh
-./setup.sh
+chmod +x run.sh
+./run.sh
 ```
+
+### Run the simulation
+
+```bash
+# Inside the container
+python sim/mujoco_env.py
+```
+
+MuJoCo viewer opens with Mini-SPOT standing on a checkered ground plane.
+Use left mouse to orbit, right mouse to pan, scroll to zoom.
 
 ---
 
@@ -79,29 +91,37 @@ chmod +x setup.sh
 
 ```
 mini-SPOT/
+├── run.sh                      ← one-command start (X11 + container)
 ├── docker/
 │   ├── Dockerfile              ← Python 3.11, MuJoCo, all dependencies
 │   └── docker-compose.yml      ← container config, volume mounts, display
 ├── assets/
-│   └── mini_spot.xml           ← MuJoCo MJCF robot model
+│   ├── mini_spot.xml           ← MuJoCo MJCF robot model (pure robot description)
+│   ├── scene.xml               ← simulation world (ground, lighting, skybox)
+│   └── CAD_Files/
+│       └── STL_combined/       ← mesh files for visual geometry
 ├── sim/
-│   ├── ik_solver.py            ← IKSolver — foot position → joint angles
-│   ├── bezier_trajectory.py    ← BezierTrajectoryGenerator — swing foot path
-│   ├── gait_scheduler.py       ← GaitScheduler — trot/crawl timing
-│   ├── locomotion_controller.py← top-level controller
-│   └── mujoco_env.py           ← MuJoCo simulation runner
-├── hardware/
-│   ├── esp32/
-│   │   ├── servo_driver.py     ← MicroPython: drives PCA9685
-│   │   └── calibrate.py        ← servo calibration tool
-│   └── serial_bridge.py        ← laptop → ESP32 serial bridge
-├── tests/
-│   ├── test_ik.py
-│   ├── test_bezier.py
-│   └── test_gait.py
-├── setup.sh                    ← one-command environment setup
-
+│   ├── mujoco_env.py           ← MuJoCo simulation runner
 ```
+
+---
+
+## Robot Model
+
+The MJCF model (`assets/mini_spot.xml`) describes the full robot:
+
+- Rectangular torso with freejoint (6 DOF in world)
+- 4 legs × 3 bodies (hip, thigh, calf) with real STL mesh geometry
+- 8 active position actuators (HFE + KFE per leg, HAA locked)
+- IMU sensor site on trunk (accelerometer + gyro)
+- Foot force sensor sites on each calf (contact detection)
+- Joint limits matching real servo range: HFE [-0.785, 3.14] rad, KFE [-2.44, -0.916] rad
+- Keyframes: `start` (crouched stand) and `home` (extended)
+
+The scene file (`assets/scene.xml`) includes the robot and adds the world:
+- Checkered ground plane with proper friction
+- Skybox gradient
+- Directional lighting with shadows
 
 ---
 
@@ -110,13 +130,13 @@ mini-SPOT/
 | Tool | Role |
 |---|---|
 | Python 3.11 | Primary language |
-| MuJoCo | Physics simulation |
+| MuJoCo 3.1.6 | Physics simulation |
 | MJCF XML | Robot model format |
 | NumPy / SciPy | Kinematics and math |
 | Matplotlib | Visualization and debugging |
 | Docker | Reproducible environment |
 | ESP32 + MicroPython | Low-level servo control |
-
+| NVIDIA Jetson Nano | Onboard compute |
 
 ---
 
@@ -125,13 +145,26 @@ mini-SPOT/
 ```
 VelocityCommand (vx, vy, yaw)
     └── GaitScheduler        → phase and swing/stance per leg
-          └── BezierTrajectory → foot target position (x, y, z)
-                └── IKSolver   → joint angles (θ_HAA, θ_HFE, θ_KFE)
+          └── BezierTrajectory → foot target position (x, z)
+                └── IKSolver   → joint angles (θ_HFE, θ_KFE)
                       └── MuJoCo actuators / ESP32 servos
 ```
 
-Control loop: physics at 1000Hz, controller at 100Hz.
+Physics runs at 1000Hz. Controller runs at 100Hz (every 10 physics steps).
 
+---
 
+## Sensors (Simulation)
+
+All sensors are simulation-only
+
+| Sensor | Location | Data | Hardware plan |
+|---|---|---|---|
+| Accelerometer | Trunk | Linear acceleration (m/s²) | Wire IMU to ESP32 via I2C |
+| Gyroscope | Trunk | Angular velocity (rad/s) | Wire IMU to ESP32 via I2C |
+| Foot force | Each calf | 3-axis contact force (N) | Estimate from joint torques |
+
+---
 
 *Bachelor's project — Robotics Engineering, Germany*
+
