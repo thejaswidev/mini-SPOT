@@ -1,0 +1,40 @@
+# =============================================================================
+# Mini-SPOT — .gitignore
+# =============================================================================
+
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+
+# MuJoCo
+*.mjb
+*.mjtrc
+
+
+# Logs and plots
+logs/
+*.log
+*.png
+*.mp4
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Docker
+docker/data/

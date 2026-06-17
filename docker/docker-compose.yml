@@ -1,0 +1,66 @@
+# =============================================================================
+# Mini-SPOT — docker-compose.yml
+# =============================================================================
+# Usage:
+#   Start:   docker compose up -d
+#   Shell:   docker compose exec mini-spot bash
+#   Stop:    docker compose down
+#
+# Before starting (one-time per machine):
+#   Linux:   xhost +local:docker
+#   macOS:   Install XQuartz → xhost +localhost
+#   Windows: Install VcXsrv and set DISPLAY in your .env file
+# =============================================================================
+
+services:
+  mini-spot:
+    # -------------------------------------------------------------------------
+    # BUILD
+    # -------------------------------------------------------------------------
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+
+    image: mini-spot:latest
+
+    container_name: mini-spot
+
+    # -------------------------------------------------------------------------
+    # DISPLAY
+    # Lets MuJoCo open a window on your screen.
+    # DISPLAY comes from .env file
+    # -------------------------------------------------------------------------
+    environment:
+      - DISPLAY=${DISPLAY}
+      - MUJOCO_GL=glfw
+      - PYTHONPATH=/workspace
+
+    # -------------------------------------------------------------------------
+    # VOLUMES
+    # Your repo folder on your machine = /workspace inside the container.
+    # Edit files in VS Code on your machine, run them inside the container.
+    # The second line gives the container access to your screen (X11).
+    # -------------------------------------------------------------------------
+    volumes:
+      - .:/workspace
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+
+    # -------------------------------------------------------------------------
+    # NETWORK
+    # host mode so the container can talk to your ESP32 over USB serial
+    # and reach the internet for any pip installs during development.
+    # -------------------------------------------------------------------------
+    network_mode: host
+
+    # -------------------------------------------------------------------------
+    # RUNTIME
+    # Keep the container running so you can exec into it anytime.
+    # -------------------------------------------------------------------------
+    stdin_open: true
+    tty: true
+
+    # -------------------------------------------------------------------------
+    # WORKING DIRECTORY
+    # Container starts here — matches your repo root.
+    # -------------------------------------------------------------------------
+    working_dir: /workspace
