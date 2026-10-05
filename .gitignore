@@ -38,3 +38,5 @@ logs/
 
 # Docker
 docker/data/
+.venv/
+quadruped_bezier_ppo.zip

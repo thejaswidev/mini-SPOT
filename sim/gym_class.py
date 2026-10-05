@@ -17,10 +17,26 @@ Gymnasium environment: RL tunes Bezier gait parameters for a MuJoCo quadruped.
             | gyro(3) | height(1) | phase sin/cos(2) | current params, normalised(6)
 """
 
+import os
+import faulthandler
+
+# Print a Python traceback if we hit a native crash (segfault) instead of dying silently.
+faulthandler.enable()
+
+# torch (pulled in by stable-baselines3) and MuJoCo both ship native libs that use
+# OpenMP. With multiple OpenMP runtimes / thread pools in one process the Linux
+# container can segfault right after "Using cpu device". One thread is plenty for
+# this tiny MLP and the sim is single-threaded anyway.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 import mujoco
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_XML = os.path.join(HERE, "..", "assets", "scene.xml")
 
 # ---------------------------------------------------------------- gait maths
 def smoothstep(t):
@@ -78,7 +94,7 @@ class QuadrupedBezierEnv(gym.Env):
 
     def __init__(
         self,
-        xml_path="../assets/scene.xml",
+        xml_path=DEFAULT_XML,        # resolved relative to this file, not the cwd
         render_mode=None,
         gait="walk",                 # "walk" | "trot"
         swing_fraction=None,         # default 0.33 walk / 0.45 trot
@@ -260,6 +276,12 @@ class QuadrupedBezierEnv(gym.Env):
         grav, _, _ = self._imu()
         h = self.data.qpos[self.root_qpos + 2]
         terminated = bool(grav[2] > -0.5 or h < 0.5 * self.target_height)  # tilted >60 deg / collapsed
+        # physics blew up: NaN/inf state would otherwise crash the policy update
+        obs = self._obs()
+        if not (np.all(np.isfinite(obs)) and np.isfinite(reward)):
+            terminated = True
+            reward = 0.0
+            obs = np.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
         if terminated:
             reward -= 5.0
         self.step_count += 1
@@ -271,7 +293,7 @@ class QuadrupedBezierEnv(gym.Env):
 
         if self.render_mode == "human":
             self.render()
-        return self._obs(), reward, terminated, truncated, info
+        return obs, reward, terminated, truncated, info
 
     def render(self):
         if self.render_mode != "human":
@@ -290,14 +312,21 @@ class QuadrupedBezierEnv(gym.Env):
 # ---------------------------------------------------------------- quick test / training
 if __name__ == "__main__":
     import sys
+    training = len(sys.argv) > 1 and sys.argv[1] == "train"
+    if training:
+        # Initialise torch before any MuJoCo model is created, and pin it to one
+        # thread (see OMP_NUM_THREADS note at the top of the file).
+        import torch
+        torch.set_num_threads(1)
+        from stable_baselines3 import PPO
+        from stable_baselines3.common.env_util import make_vec_env
+        print("import done")
+
     env = QuadrupedBezierEnv()
     obs, _ = env.reset(seed=0)
     print("obs shape:", obs.shape)
 
-    if len(sys.argv) > 1 and sys.argv[1] == "train":
-        from stable_baselines3 import PPO
-        from stable_baselines3.common.env_util import make_vec_env
-        print("import done")
+    if training:
         venv = make_vec_env(lambda: QuadrupedBezierEnv(), n_envs=1)
         model = PPO("MlpPolicy", venv, verbose=1, n_steps=256, batch_size=256,
                     learning_rate=3e-4, gamma=0.97, ent_coef=0.005)

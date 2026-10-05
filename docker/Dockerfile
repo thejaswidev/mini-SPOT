@@ -68,6 +68,19 @@ RUN pip install --no-cache-dir \
     pytest-cov==5.0.0
 
 # -----------------------------------------------------------------------------
+# REINFORCEMENT LEARNING (sim/gym_class.py)
+# CPU-only torch wheel: no CUDA in the container, and the default PyPI wheel
+# drags in ~2 GB of CUDA libs on x86.
+# -----------------------------------------------------------------------------
+RUN pip install --no-cache-dir torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir \
+    gymnasium==0.29.1 \
+    stable-baselines3==2.3.2
+
+# One OpenMP thread: avoids torch/MuJoCo thread-pool clashes (segfaults)
+ENV OMP_NUM_THREADS=1
+
+# -----------------------------------------------------------------------------
 # MUJOCO DISPLAY SETTINGS
 # MUJOCO_GL=glfw    → opens a real window
 # MUJOCO_GL=egl     → headless
