@@ -10,6 +10,8 @@ Then type commands in the terminal:
     walk | trot                 walk forward continuously
     turn left [deg]             rotate in place by deg (default 90) then stand
     turn right [deg]
+    circle left [radius_m]      walk in a circle (default radius 1 m) until stop
+    circle right [radius_m]
     stop | home                 stand still
     params                      show gait params
     set <param> <value>         shoulder_home | shoulder_sweep | knee_home | knee_lift
@@ -19,6 +21,11 @@ Turning: HAA (sideways hip) joints are locked, so the robot turns like a tank:
 the legs on one side step backward while the other side steps forward. The
 trunk yaw is read from the free joint and the turn stops once the requested
 angle is reached.
+
+Circling: the robot trots forward while the legs on the inside of the circle
+take shorter steps than the outside legs, so the path bends. The controller
+measures how sharply the path actually curves (yaw change per metre walked)
+and keeps adjusting the inside step length until it matches 1 / radius.
 
 ctrl layout: [FR_sh, FR_kn, FL_sh, FL_kn, RR_sh, RR_kn, RL_sh, RL_kn]
 Shoulder: fwd = home - sweep (all legs). Knee: -0.916 extended ... -2.44 folded.
@@ -76,10 +83,18 @@ GAITS = {
     "walk": (WALK_OFFSETS, 0.33),
     "trot": (TROT_OFFSETS, 0.45),
     "turn": (TROT_OFFSETS, 0.45),   # diagonal pairs: turns on the spot with least drift
+    "circle": (TROT_OFFSETS, 0.45), # trot reaches tighter circles than walk
 }
 
 DEFAULT_TURN_DEG = 90.0
 TURN_TOLERANCE_DEG = 2.0     # stop this close to the target (the body coasts the rest)
+
+DEFAULT_CIRCLE_RADIUS = 1.0  # m
+MIN_CIRCLE_RADIUS = 0.6      # m, tighter than this the steering maxes out (measured ~0.55 m)
+# Steering amount k: inside legs step with sweep * (1 - k), outside legs with the full sweep.
+# k = 0 walks straight, k = 1 freezes the inside legs, k > 1 makes them step backward.
+STEER_MAX = 1.3
+STEER_GAIN = 0.15            # how fast k is corrected per (1/m curvature error) per second
 
 
 def yaw_of(quat):
@@ -97,7 +112,7 @@ def wrap(angle):
 # ================================================================
 class GaitController:
     """
-    Modes: "stand", "walk", "trot", "turn".
+    Modes: "stand", "walk", "trot", "turn", "circle".
     Call step() once per physics step; gait targets are updated at CONTROL_FREQUENCY.
     """
 
@@ -116,6 +131,11 @@ class GaitController:
         self.turn_target = 0.0     # rad, absolute amount still to turn
         self.turned = 0.0          # rad, signed yaw accumulated in this turn
         self.prev_yaw = 0.0
+        self.circle_dir = 0        # +1 left (CCW), -1 right (CW)
+        self.circle_radius = DEFAULT_CIRCLE_RADIUS
+        self.steer = 0.0           # k, see STEER_MAX
+        self.track = []            # recent (x, y, unwrapped yaw) samples while circling
+        self.track_yaw = 0.0       # unwrapped yaw for the track
         self.last_control = -np.inf
         # blend from the pose held at the start of a mode change to the new targets
         self.blend_from = None
@@ -156,6 +176,43 @@ class GaitController:
         self.prev_yaw = self.yaw()
         self._change_mode("turn")
 
+    def circle(self, direction, radius=DEFAULT_CIRCLE_RADIUS):
+        """direction: "left" | "right". Walks in a circle of `radius` metres until stop."""
+        self.circle_dir = 1 if direction == "left" else -1
+        self.circle_radius = max(abs(radius), MIN_CIRCLE_RADIUS)
+        # first guess for the steering amount (measured in the sim), then feedback corrects it
+        self.steer = float(np.clip(0.4 + 0.3 / self.circle_radius, 0.0, STEER_MAX))
+        self.track = []
+        self.track_yaw = 0.0
+        self.prev_yaw = self.yaw()
+        self._change_mode("circle")
+
+    def _update_steering(self, dt):
+        """Measure the circle the robot is actually walking and nudge the steering toward it.
+
+        The body sways sideways with every step, so the radius is measured over one full
+        gait cycle: an arc that turns by angle a over a straight-line distance c has
+        radius c / (2 sin(a / 2)).
+        """
+        y = self.yaw()
+        self.track_yaw += wrap(y - self.prev_yaw)
+        self.prev_yaw = y
+        xy = self.data.qpos[self.root_qpos:self.root_qpos + 2]
+        self.track.append((xy[0], xy[1], self.track_yaw))
+
+        window = max(2, round(self.p["cycle_period"] / dt))
+        if len(self.track) <= window:
+            return                   # need one full gait cycle of data first
+        self.track = self.track[-(window + 1):]
+        x0, y0, a0 = self.track[0]
+        x1, y1, a1 = self.track[-1]
+        chord = np.hypot(x1 - x0, y1 - y0)
+        turned = self.circle_dir * (a1 - a0)
+        curvature = 2.0 * np.sin(turned / 2.0) / max(chord, 1e-3)
+
+        error = 1.0 / self.circle_radius - curvature
+        self.steer = float(np.clip(self.steer + STEER_GAIN * error * dt, 0.0, STEER_MAX))
+
     def _change_mode(self, mode):
         self.blend_from = self._current_ctrl()
         self.blend_start = self.data.time
@@ -178,6 +235,11 @@ class GaitController:
                 backward = leg["left"] if self.turn_dir > 0 else not leg["left"]
                 if backward:
                     sweep = -sweep
+            elif self.mode == "circle":
+                # inside legs (left side for a left circle) take shorter steps
+                inside = leg["left"] if self.circle_dir > 0 else not leg["left"]
+                if inside:
+                    sweep *= 1.0 - self.steer
             ph = (self.phase + offsets[i]) % 1.0
             targets.append(compute_leg(self.p, sweep, ph, swing_frac))
         return targets
@@ -205,6 +267,8 @@ class GaitController:
                 if abs(self.turned) >= self.turn_target - np.radians(TURN_TOLERANCE_DEG):
                     msg = f">> Turn done: rotated {np.degrees(self.turned):+.1f} deg"
                     self._change_mode("stand")
+            elif self.mode == "circle" and dt > 0:
+                self._update_steering(dt)
 
             if self.mode == "stand":
                 targets = self._stand_targets()
@@ -233,6 +297,8 @@ HELP = """  Commands (type in terminal, then Enter):
     walk | trot                 walk forward
     turn left [deg]             rotate in place (default 90 deg), then stand
     turn right [deg]
+    circle left [radius_m]      walk in a circle (default 1 m) until stop
+    circle right [radius_m]
     stop | home                 stand still
     params                      show gait params
     set <param> <value>         e.g. set shoulder_sweep 0.35"""
@@ -256,6 +322,18 @@ def handle_command(ctrl, raw_cmd):
             return
         print(f">> TURN {parts[1].upper()} {deg:.0f} deg")
         ctrl.turn(parts[1], deg)
+
+    elif cmd == "circle" and len(parts) >= 2 and parts[1] in ("left", "right"):
+        try:
+            radius = float(parts[2]) if len(parts) >= 3 else DEFAULT_CIRCLE_RADIUS
+        except ValueError:
+            print(">> Usage: circle left|right [radius in metres]")
+            return
+        if radius < MIN_CIRCLE_RADIUS:
+            print(f">> Smallest circle is {MIN_CIRCLE_RADIUS} m, using that")
+            radius = MIN_CIRCLE_RADIUS
+        print(f">> CIRCLE {parts[1].upper()}, radius {radius:.2f} m (type stop to end)")
+        ctrl.circle(parts[1], radius)
 
     elif cmd in ("stop", "home"):
         ctrl.stand()

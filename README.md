@@ -4,7 +4,7 @@ A small 4-legged robot dog (inspired by Boston Dynamics Spot), built as a
 Bachelor's project in Robotics Engineering.
 
 Right now everything runs in a **physics simulation** (MuJoCo) on the computer.
-The robot can walk, trot, and turn left/right on command. Reinforcement
+The robot can walk, trot, turn left/right, and walk in circles on command. Reinforcement
 learning (RL) is being added to find a smoother, better walking style.
 
 > This README describes the `rl-gait` branch.
@@ -32,7 +32,7 @@ learning (RL) is being added to find a smoother, better walking style.
 | `sim/gait_controller.py` | **Drive the robot yourself.** Opens a 3D window; you type `walk`, `turn left`, `stop`… | To watch the robot move and test gaits by hand |
 | `sim/rl_ppo.py` | **Train / test the RL brain.** Lets the computer learn the best walking settings | To improve the walk automatically |
 | `sim/mujoco_env.py` | **Just show the robot standing.** The simplest viewer | To check the robot model loads |
-| `tests/test_gait_controller.py` | **Automatic checks.** Turns the robot 45°/90° without a window and checks it really turned that much | After changing code, to make sure nothing broke |
+| `tests/test_gait_controller.py` | **Automatic checks.** Turns the robot and walks circles without a window, and checks the angle / circle size are right | After changing code, to make sure nothing broke |
 
 ### The files the others use (you don't run these directly)
 
@@ -137,6 +137,8 @@ A 3D window opens with the robot standing. **Type commands in the terminal** and
 | `trot` | Walks forward faster, diagonal legs move together |
 | `turn left` | Spins 90° left on the spot, then stands still |
 | `turn right 45` | Spins 45° right (any angle works), then stands still |
+| `circle left` | Walks in a circle to the left (1 m radius) until you type `stop` |
+| `circle right 2` | Walks in a circle to the right with a 2 m radius (smallest: 0.6 m) |
 | `stop` | Stands still |
 | `params` | Shows the current settings |
 | `set <name> <value>` | Changes a setting live, e.g. `set shoulder_sweep 0.4` |
@@ -185,6 +187,12 @@ sideways. It turns like a tank instead:
 
 While turning, the controller keeps checking which way the body points. When it has
 rotated the requested angle, it stops and stands. Accuracy is about ±2.5°.
+
+**Walking in a circle** – the robot trots forward, but the legs on the **inside** of the
+circle take **shorter steps** than the outside legs, so the path bends (like a car where
+the inner wheels turn slower). The controller keeps measuring how big the circle it is
+actually walking is, and adjusts the inside step length until it matches the radius you
+asked for (accurate to a few cm). A 1 m circle takes a bit over a minute.
 
 ---
 
@@ -253,7 +261,7 @@ a foot-contact sensor on each leg.
 | 1 | Docker setup + GitHub | ✅ Done |
 | 2 | Robot model in the simulation | ✅ Done |
 | 3 | Smooth leg curves (Bezier) + walk / trot | ✅ Done |
-| 4 | Turn left / right on command | ✅ Done |
+| 4 | Turn left / right and walk in circles on command | ✅ Done |
 | 5 | RL to improve the walk | 🔄 In progress |
 | 6 | Put the best RL settings into the controller | ⬜ Next |
 | 7 | Run it on the real robot (ESP32) | ⬜ Later |
