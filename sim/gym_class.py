@@ -9,83 +9,47 @@ Gymnasium environment: RL tunes Bezier gait parameters for a MuJoCo quadruped.
       4 knee_lift          rad
       5 cycle_period       s     (the swing fraction is kept fixed; see swing_fraction arg)
 
-  The Bezier generator runs inside the env at CONTROL_FREQUENCY; the policy
-  steps once per `policy_dt` and only changes the *parameters* of the generator.
-  Params are low-pass filtered so the gait changes smoothly.
+  ONE ACTION PER EPISODE: the policy picks the gait parameters once. step(action)
+  then runs the whole episode (max_episode_s) with those parameters held fixed
+  and returns the summed reward. Only the phase advances inside the episode.
+  The Bezier generator runs inside the env at CONTROL_FREQUENCY; `policy_dt` is
+  now just the chunk length used for reward averaging and termination checks.
 
   obs (34): joint pos(8) | joint vel(8) | projected gravity(3) | body lin vel(3)
             | gyro(3) | height(1) | phase sin/cos(2) | current params, normalised(6)
+            
 """
 
 import os
-import faulthandler
+# import faulthandler
 
-# Print a Python traceback if we hit a native crash (segfault) instead of dying silently.
-faulthandler.enable()
+# # Print a Python traceback if we hit a native crash (segfault) instead of dying silently.
+# faulthandler.enable()
 
-# torch (pulled in by stable-baselines3) and MuJoCo both ship native libs that use
-# OpenMP. With multiple OpenMP runtimes / thread pools in one process the Linux
-# container can segfault right after "Using cpu device". One thread is plenty for
-# this tiny MLP and the sim is single-threaded anyway.
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
+# # torch (pulled in by stable-baselines3) and MuJoCo both ship native libs that use
+# # OpenMP. With multiple OpenMP runtimes / thread pools in one process the Linux
+# # container can segfault right after "Using cpu device". One thread is plenty for
+# # this tiny MLP and the sim is single-threaded anyway.
+# os.environ.setdefault("OMP_NUM_THREADS", "1")
+# os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 import mujoco
 
+from .bezier_helpers import (
+    LEGS,
+    PARAM_HIGH,
+    PARAM_LOW,
+    PARAM_NAMES,
+    TROT_OFFSETS,
+    WALK_OFFSETS,
+    compute_leg,
+)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_XML = os.path.join(HERE, "..", "assets", "scene.xml")
-
-# ---------------------------------------------------------------- gait maths
-def smoothstep(t):
-    t = np.clip(t, 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
-
-def lerp(a, b, t):
-    return a + (b - a) * t
-
-def cubic_bezier(p0, p1, p2, p3, t):
-    u = 1.0 - t
-    return u**3 * p0 + 3 * u**2 * t * p1 + 3 * u * t**2 * p2 + t**3 * p3
-
-
-WALK_OFFSETS = np.array([0.25, 0.75, 0.50, 0.00])   # FR, FL, RR, RL
-TROT_OFFSETS = np.array([0.00, 0.50, 0.50, 0.00])
-
-# (low, high) for each action dimension
-PARAM_NAMES = ["shoulder_home", "sweep_left", "sweep_right",
-               "knee_home", "knee_lift", "cycle_period"]
-PARAM_LOW   = np.array([0.20, 0.00, 0.00, -2.69653, -2.69653, 0.50])
-PARAM_HIGH  = np.array([1.20, 0.60, 0.60, -0.916298, -0.916298, 2.00])
-
-KNEE_MIN, KNEE_MAX = -2.69653, -0.916298
-
-# ctrl layout: [FR_sh, FR_kn, FL_sh, FL_kn, RR_sh, RR_kn, RL_sh, RL_kn]
-LEGS = [
-    {"name": "FR", "sh": 0, "kn": 1, "left": False},
-    {"name": "FL", "sh": 2, "kn": 3, "left": True},
-    {"name": "RR", "sh": 4, "kn": 5, "left": False},
-    {"name": "RL", "sh": 6, "kn": 7, "left": True},
-]
-
-
-def compute_leg(p, sweep, phase, swing_frac):
-    """Same as the original compute_leg; all legs use inv_sh=True (fwd = home - sweep)."""
-    sh_fwd  = p["shoulder_home"] - sweep
-    sh_back = p["shoulder_home"] + sweep
-    kh, kl = p["knee_home"], p["knee_lift"]
-
-    if phase < swing_frac:
-        t = phase / swing_frac
-        sh = cubic_bezier(sh_back, sh_back, sh_fwd, sh_fwd, t)
-        kn = cubic_bezier(kh, kl, kl, kh, t)
-    else:
-        s = (phase - swing_frac) / (1.0 - swing_frac)
-        sh = lerp(sh_fwd, sh_back, s)
-        kn = kh
-    return np.clip(sh, 0.0, np.pi), np.clip(kn, KNEE_MIN, KNEE_MAX)
 
 
 # ---------------------------------------------------------------- environment
@@ -95,15 +59,14 @@ class QuadrupedBezierEnv(gym.Env):
     def __init__(
         self,
         xml_path=DEFAULT_XML,        # resolved relative to this file, not the cwd
-        render_mode=None,
+        render_mode="human",  # "human" | None
         gait="walk",                 # "walk" | "trot"
         swing_fraction=None,         # default 0.33 walk / 0.45 trot
         control_freq=50.0,           # Hz, Bezier target update rate
-        policy_dt=0.2,               # s between policy actions
+        policy_dt=0.2,               # s per reward/termination chunk inside an episode
         max_episode_s=20.0,
         target_speed=0.3,            # m/s along body forward axis
         forward_axis=(1.0, 0.0, 0.0),  # body-frame forward direction  (CHECK for your model!)
-        param_smoothing=0.3,         # EMA factor on params (1 = no smoothing)
         reward_weights=None,
         seed=None,
     ):
@@ -123,10 +86,9 @@ class QuadrupedBezierEnv(gym.Env):
         self.target_speed = target_speed
         self.fwd = np.asarray(forward_axis, dtype=float)
         self.fwd /= np.linalg.norm(self.fwd)
-        self.alpha = param_smoothing
 
         self.w = dict(vel=2.0, lateral=0.5, yaw=0.3, height=1.0, orient=1.0,
-                      ang_vel=0.05, energy=0.001, action_rate=0.05, alive=0.2)
+                      ang_vel=0.05, energy=0.001, alive=0.2)
         if reward_weights:
             self.w.update(reward_weights)
 
@@ -153,7 +115,6 @@ class QuadrupedBezierEnv(gym.Env):
         self.phase = 0.0
         self.step_count = 0
         self.target_height = 0.0
-        self.prev_action = np.zeros(6)
         self.np_random_ = np.random.default_rng(seed)
 
     # ------------------------------------------------------------ helpers
@@ -200,6 +161,27 @@ class QuadrupedBezierEnv(gym.Env):
             self.data.ctrl[leg["sh"]] = sh
             self.data.ctrl[leg["kn"]] = kn
 
+    def _apply_action(self, action):
+        action = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
+        # set once, directly: no EMA smoothing, since there is nothing to smooth between
+        self.params = self._to_phys(action)
+        return action
+
+    def _calculate_reward(self, speeds, lats, yaws, heights, orients, angs, energy):
+        vx = np.mean(speeds)
+        reward_terms = {
+            "vel": self.w["vel"] * np.exp(-((vx - self.target_speed) ** 2) / 0.05),
+            "lateral": -self.w["lateral"] * abs(np.mean(lats)),
+            "yaw": -self.w["yaw"] * abs(np.mean(yaws)),
+            "height": -self.w["height"] * abs(np.mean(heights) - self.target_height)
+            / max(self.target_height, 1e-3),
+            "orient": -self.w["orient"] * np.mean(orients),
+            "ang_vel": -self.w["ang_vel"] * np.mean(angs),
+            "energy": -self.w["energy"] * energy / self.n_control,
+            "alive": self.w["alive"],
+        }
+        return float(sum(reward_terms.values())), reward_terms, vx
+
     # ------------------------------------------------------------ gym API
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -209,7 +191,6 @@ class QuadrupedBezierEnv(gym.Env):
 
         self.params = self.default_params.copy()
         self.phase = 0.0
-        self.prev_action[:] = 0.0
         self.step_count = 0
 
         # home pose + settle (as in set_home)
@@ -229,71 +210,70 @@ class QuadrupedBezierEnv(gym.Env):
         return self._obs(), {}
 
     def step(self, action):
-        action = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
-
-        # smooth parameter update (EMA toward requested params)
-        target = self._to_phys(action)
-        self.params = (1 - self.alpha) * self.params + self.alpha * target
+        """One policy action = one full episode with fixed gait parameters."""
+        action = self._apply_action(action)
 
         pos0 = self.data.qpos[self.root_qpos:self.root_qpos + 3].copy()
-        energy = 0.0
-        speeds, lats, yaws, heights, orients, angs = [], [], [], [], [], []
+        lat_axis = np.array([-self.fwd[1], self.fwd[0], 0.0])
 
-        for _ in range(self.n_control):
-            self.phase = (self.phase + self.control_dt / self.params[5]) % 1.0
-            self._apply_gait()
-            for _ in range(self.n_sim):
-                mujoco.mj_step(self.model, self.data)
+        total_reward = 0.0
+        terminated = False
+        vx_hist = []
+        term_sums = {}
 
-            grav, lin_b, gyro = self._imu()
-            speeds.append(lin_b @ self.fwd)
-            # lateral = body-frame horizontal axis perpendicular to forward
-            lat_axis = np.array([-self.fwd[1], self.fwd[0], 0.0])
-            lats.append(lin_b @ lat_axis)
-            yaws.append(gyro[2])
-            angs.append(np.sum(gyro[:2] ** 2))
-            heights.append(self.data.qpos[self.root_qpos + 2])
-            orients.append(np.sum(grav[:2] ** 2))
-            energy += float(np.sum(np.abs(self.data.actuator_force[:8] * self.data.qvel[self.j_dof])))
+        for _ in range(self.max_steps):          # max_steps = chunks of policy_dt
+            energy = 0.0
+            speeds, lats, yaws, heights, orients, angs = [], [], [], [], [], []
 
-        # ------------------------------------------------------------ reward
-        vx = np.mean(speeds)
-        r = {
-            "vel":     self.w["vel"] * np.exp(-((vx - self.target_speed) ** 2) / 0.05),
-            "lateral": -self.w["lateral"] * abs(np.mean(lats)),
-            "yaw":     -self.w["yaw"] * abs(np.mean(yaws)),
-            "height":  -self.w["height"] * abs(np.mean(heights) - self.target_height) / max(self.target_height, 1e-3),
-            "orient":  -self.w["orient"] * np.mean(orients),
-            "ang_vel": -self.w["ang_vel"] * np.mean(angs),
-            "energy":  -self.w["energy"] * energy / self.n_control,
-            "action_rate": -self.w["action_rate"] * np.sum((action - self.prev_action) ** 2),
-            "alive":   self.w["alive"],
-        }
-        reward = float(sum(r.values()))
-        self.prev_action = action
+            for _ in range(self.n_control):
+                self.phase = (self.phase + self.control_dt / self.params[5]) % 1.0
+                self._apply_gait()               # params stay constant, only phase advances
+                for _ in range(self.n_sim):
+                    mujoco.mj_step(self.model, self.data)
 
-        # ------------------------------------------------------------ done
-        grav, _, _ = self._imu()
-        h = self.data.qpos[self.root_qpos + 2]
-        terminated = bool(grav[2] > -0.5 or h < 0.5 * self.target_height)  # tilted >60 deg / collapsed
-        # physics blew up: NaN/inf state would otherwise crash the policy update
-        obs = self._obs()
-        if not (np.all(np.isfinite(obs)) and np.isfinite(reward)):
-            terminated = True
-            reward = 0.0
-            obs = np.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
-        if terminated:
-            reward -= 5.0
+                grav, lin_b, gyro = self._imu()
+                speeds.append(lin_b @ self.fwd)
+                lats.append(lin_b @ lat_axis)
+                yaws.append(gyro[2])
+                angs.append(np.sum(gyro[:2] ** 2))
+                heights.append(self.data.qpos[self.root_qpos + 2])
+                orients.append(np.sum(grav[:2] ** 2))
+                energy += float(np.sum(np.abs(
+                    self.data.actuator_force[:8] * self.data.qvel[self.j_dof])))
+
+                if self.render_mode == "human":
+                    self.render()
+
+            r_chunk, terms, vx = self._calculate_reward(
+                speeds, lats, yaws, heights, orients, angs, energy)
+            vx_hist.append(vx)
+            for k, v in terms.items():
+                term_sums[k] = term_sums.get(k, 0.0) + v
+
+            # ---- termination checks (once per chunk)
+            grav, _, _ = self._imu()
+            h = self.data.qpos[self.root_qpos + 2]
+            obs = self._obs()
+            if not (np.all(np.isfinite(obs)) and np.isfinite(r_chunk)):
+                # physics blew up: NaN/inf state would otherwise crash the policy update
+                terminated, r_chunk = True, 0.0
+            elif grav[2] > -0.5 or h < 0.5 * self.target_height:
+                terminated = True                # tilted >60 deg / collapsed
+
+            total_reward += r_chunk
+            if terminated:
+                total_reward -= 5.0
+                break
+
         self.step_count += 1
-        truncated = self.step_count >= self.max_steps
-
+        obs = np.nan_to_num(self._obs(), nan=0.0, posinf=0.0, neginf=0.0)
+        truncated = not terminated               # survived the full episode
         pos1 = self.data.qpos[self.root_qpos:self.root_qpos + 3]
-        info = {"reward_terms": r, "forward_vel": vx,
-                "distance": float(np.linalg.norm(pos1[:2] - pos0[:2])), "params": self.params.copy()}
-
-        if self.render_mode == "human":
-            self.render()
-        return obs, reward, terminated, truncated, info
+        info = {"reward_terms": term_sums,
+                "forward_vel": float(np.mean(vx_hist)),
+                "distance": float(np.linalg.norm(pos1[:2] - pos0[:2])),
+                "params": self.params.copy()}
+        return obs, float(total_reward), terminated, truncated, info
 
     def render(self):
         if self.render_mode != "human":
@@ -307,38 +287,3 @@ class QuadrupedBezierEnv(gym.Env):
         if self.viewer is not None:
             self.viewer.close()
             self.viewer = None
-
-
-# ---------------------------------------------------------------- quick test / training
-if __name__ == "__main__":
-    import sys
-    training = len(sys.argv) > 1 and sys.argv[1] == "train"
-    if training:
-        # Initialise torch before any MuJoCo model is created, and pin it to one
-        # thread (see OMP_NUM_THREADS note at the top of the file).
-        import torch
-        torch.set_num_threads(1)
-        from stable_baselines3 import PPO
-        from stable_baselines3.common.env_util import make_vec_env
-        print("import done")
-
-    env = QuadrupedBezierEnv()
-    obs, _ = env.reset(seed=0)
-    print("obs shape:", obs.shape)
-
-    if training:
-        venv = make_vec_env(lambda: QuadrupedBezierEnv(), n_envs=1)
-        model = PPO("MlpPolicy", venv, verbose=1, n_steps=256, batch_size=256,
-                    learning_rate=3e-4, gamma=0.97, ent_coef=0.005)
-        print("env initialised")
-        model.learn(total_timesteps=500_000)
-        model.save("quadruped_bezier_ppo")
-    else:
-        # sanity: zero action = hold current (default) gait params
-        total = 0.0
-        for _ in range(50):
-            obs, rew, term, trunc, info = env.step(env.action_space.sample() * 0.0)
-            total += rew
-            if term or trunc:
-                break
-        print("return:", total, "fwd vel:", info["forward_vel"])
