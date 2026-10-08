@@ -1,193 +1,264 @@
 # Mini-SPOT
 
-A miniature quadruped robot inspired by Boston Dynamics Spot.
+A small 4-legged robot dog (inspired by Boston Dynamics Spot), built as a
+Bachelor's project in Robotics Engineering.
 
-The goal is a fully autonomous legged robot: simulation, kinematics, gait control, and real hardware deployment. 
+Right now everything runs in a **physics simulation** (MuJoCo) on the computer.
+The robot can walk, trot, and turn left/right on command. Reinforcement
+learning (RL) is being added to find a smoother, better walking style.
+
+> This README describes the `rl-gait` branch.
 
 ---
 
-## Hardware
+## The 30-second version
 
-| Component | Details |
+- The robot has **4 legs**, each with **2 motors**: a **shoulder** (swings the leg forward/back)
+  and a **knee** (bends the leg). 4 × 2 = **8 motors**.
+- Walking = moving each leg in a repeating loop: **lift it, swing it forward, put it down, push back**.
+  Doing this with the 4 legs at different times makes the body move forward.
+- **Turning** = left legs and right legs push in opposite directions, so the body spins on the spot.
+- **RL** = the computer tries thousands of different walking settings (step length, speed, knee bend…)
+  and keeps the ones that make the robot walk fast, straight and steady.
+
+---
+
+## What each file does
+
+### The files you actually run
+
+| File | What it is | When to use it |
+|---|---|---|
+| `sim/gait_controller.py` | **Drive the robot yourself.** Opens a 3D window; you type `walk`, `turn left`, `stop`… | To watch the robot move and test gaits by hand |
+| `sim/rl_ppo.py` | **Train / test the RL brain.** Lets the computer learn the best walking settings | To improve the walk automatically |
+| `sim/mujoco_env.py` | **Just show the robot standing.** The simplest viewer | To check the robot model loads |
+| `tests/test_gait_controller.py` | **Automatic checks.** Turns the robot 45°/90° without a window and checks it really turned that much | After changing code, to make sure nothing broke |
+
+### The files the others use (you don't run these directly)
+
+| File | What it is |
 |---|---|
-| Microcontroller | ESP32 |
-| Servo controller | PCA9685 (I2C, 16-channel PWM) |
-| Servos | 12 total — 3 per leg (HAA, HFE, KFE joints) |
+| `sim/bezier_helpers.py` | **The gait math.** Says where every leg should be at every moment (the smooth leg curves and the timing between legs). Shared by both the manual controller and RL. |
+| `sim/gym_class.py` | **The RL training ground.** Takes a set of walking settings, lets the robot walk with them for 20 s in the simulation, and gives back a **score**. |
+| `assets/mini_spot.xml` | **The robot itself**: body, legs, motors, sensors, joint limits. |
+| `assets/scene.xml` | **The world**: floor, light, sky. It loads the robot. |
+| `assets/CAD_Files/` | 3D shapes of the real robot parts (used to draw the robot). |
+
+### Setup files
+
+| File | What it is |
+|---|---|
+| `docker/Dockerfile` | Recipe for a ready-made Linux box with Python, MuJoCo, PyTorch and RL libraries installed |
+| `docker/docker-compose.yml` | Settings for that box (shares this folder and your screen with it) |
+| `run.sh` | One command that starts the box and gives you a terminal inside it |
+
+---
+
+## How the files are connected
+
+```
+                      assets/scene.xml  ──loads──►  assets/mini_spot.xml
+                      (the world)                   (the robot)
+                             ▲
+                             │ every script loads the world + robot
+        ┌────────────────────┼─────────────────────────┐
+        │                    │                         │
+ sim/mujoco_env.py   sim/gait_controller.py      sim/gym_class.py ◄── used by ── sim/rl_ppo.py
+ (just stands)       (YOU give commands)         (scores a walk)                 (RL learns)
+                             │                         │
+                             └──────── both use ───────┘
+                                          ▼
+                                sim/bezier_helpers.py
+                                (where each leg goes, when)
+```
+
+**Two separate ways to move the robot:**
+
+1. **Manual** – `gait_controller.py`: fixed rules. You give commands, it walks / turns.
+2. **Learned** – `rl_ppo.py` + `gym_class.py`: RL searches for the best walking settings.
+
+Turning is **only manual** on purpose. RL only learns forward walking, so turning
+can't mess up the walking training. The plan: let RL find the best walking settings,
+then put them into the manual controller (`set …` command), and keep turning as is.
+
+---
+
+## How to run it
+
+### On the Linux PC (Docker – recommended)
+
+First time, or after the `Dockerfile` changes:
+```bash
+git clone -b rl-gait https://github.com/thejaswidev/mini-SPOT
+cd mini-SPOT
+docker compose -f docker/docker-compose.yml build
+```
+
+Every time:
+```bash
+./run.sh                    # you are now inside the box
+```
+
+Then, inside the box:
+```bash
+python sim/gait_controller.py                            # drive the robot
+python -m sim.rl_ppo train                               # train RL
+python -m sim.rl_ppo test --model quadruped_bezier_ppo   # watch the trained result
+python -m pytest tests                                   # run the checks
+```
+
+### On a Mac (without Docker)
+
+One-time setup:
+```bash
+python3 -m venv .venv
+.venv/bin/pip install mujoco==3.1.6 "numpy<2" gymnasium stable-baselines3 torch pytest
+```
+
+Then use `.venv/bin/mjpython` for anything that opens a 3D window (Mac needs it),
+and `.venv/bin/python` for everything else:
+```bash
+.venv/bin/mjpython sim/gait_controller.py
+.venv/bin/python -m sim.rl_ppo train
+.venv/bin/python -m pytest tests
+```
+
+> Run commands from the `mini-SPOT` folder, in a normal terminal (you need to type into it).
+
+---
+
+## Using the controller (`gait_controller.py`)
+
+A 3D window opens with the robot standing. **Type commands in the terminal** and press Enter:
+
+| Command | What happens |
+|---|---|
+| `walk` | Walks forward, moving one leg at a time (most stable) |
+| `trot` | Walks forward faster, diagonal legs move together |
+| `turn left` | Spins 90° left on the spot, then stands still |
+| `turn right 45` | Spins 45° right (any angle works), then stands still |
+| `stop` | Stands still |
+| `params` | Shows the current settings |
+| `set <name> <value>` | Changes a setting live, e.g. `set shoulder_sweep 0.4` |
+
+Settings you can change:
+
+| Setting | Meaning | Default |
+|---|---|---|
+| `shoulder_home` | Shoulder angle when standing | 0.687 rad |
+| `shoulder_sweep` | How far each leg swings → bigger = longer steps | 0.35 rad |
+| `knee_home` | Knee angle when the foot is on the ground | -1.0 rad |
+| `knee_lift` | Knee angle when the foot is in the air | -1.3 rad |
+| `cycle_period` | Seconds per step cycle when walking → smaller = faster | 1.4 s |
+| `turn_period` | Same, but when turning | 1.0 s |
+
+Mouse in the 3D window: left-drag = rotate view, right-drag = move view, scroll = zoom.
+
+---
+
+## How the walking works
+
+**One leg, one cycle** (repeats over and over):
+
+```
+  SWING (foot in the air, ~1/3 of the time)     STANCE (foot on the ground, ~2/3)
+  knee bends up, leg swings forward              knee straight, leg pushes backward
+                                                 → this push moves the body forward
+```
+
+The swing follows a smooth **Bezier curve**, so the leg moves smoothly instead of jerking.
+
+**Four legs together** – all legs do the same cycle, just shifted in time:
+
+| Gait | Leg order | Feel |
+|---|---|---|
+| Walk | one leg at a time | slow, very stable |
+| Trot | diagonal pairs together (front-right + rear-left, then front-left + rear-right) | faster |
+
+**Turning on the spot** – the sideways hip joints are locked, so the robot can't step
+sideways. It turns like a tank instead:
+
+```
+  turn left:   left legs step BACKWARD,  right legs step FORWARD   → body spins left
+  turn right:  left legs step FORWARD,   right legs step BACKWARD  → body spins right
+```
+
+While turning, the controller keeps checking which way the body points. When it has
+rotated the requested angle, it stops and stands. Accuracy is about ±2.5°.
+
+---
+
+## How the RL works
+
+**What RL controls** – 6 walking settings:
+
+| # | Setting | Meaning |
+|---|---|---|
+| 1 | shoulder_home | standing shoulder angle |
+| 2 | sweep_left | step length of the left legs |
+| 3 | sweep_right | step length of the right legs |
+| 4 | knee_home | knee angle on the ground |
+| 5 | knee_lift | knee angle in the air |
+| 6 | cycle_period | how fast the legs cycle |
+
+**One try = one episode:**
+1. RL picks the 6 settings.
+2. The robot walks with them for up to 20 s in the simulation (`gym_class.py`).
+3. It gets a **score**:
+   - ➕ walking forward at about 0.3 m/s
+   - ➕ staying alive (not falling)
+   - ➖ drifting sideways or spinning
+   - ➖ body tilting, bouncing up/down, wobbling
+   - ➖ using a lot of energy
+   - ➖ big penalty for falling over
+4. RL adjusts its choices to get a higher score next time.
+
+The algorithm is **PPO** (from the `stable-baselines3` library).
+
+```bash
+python -m sim.rl_ppo train                       # default 2000 tries, saves quadruped_bezier_ppo.zip
+python -m sim.rl_ppo train --episodes 500        # fewer tries
+python -m sim.rl_ppo test                        # no model: tries the middle value of every setting
+python -m sim.rl_ppo test --model quadruped_bezier_ppo   # test the trained model
+python -m sim.rl_ppo test --no-render            # without the 3D window
+```
+
+Every try prints the settings it used, whether the robot fell, its speed, and the
+best settings found so far.
+
+---
+
+## The robot hardware
+
+| Part | Details |
+|---|---|
+| Brain (microcontroller) | ESP32 |
+| Motor driver | PCA9685 (controls up to 16 servos) |
+| Motors | 12 servos, 3 per leg |
 | Battery | LiPo |
-| IMU | Basic IMU (simulation only for now) |
-| Onboard compute (planned) | NVIDIA Jetson Nano |
+| Planned onboard computer | NVIDIA Jetson Nano |
 
+Each real leg has 3 motors: **sideways hip**, **shoulder**, **knee**. In the
+simulation the sideways hip is **locked**, so only 8 motors move (shoulder + knee per leg).
 
-4 legs × 3 joints = 12 servos total. Each leg has full 3-DOF — Hip Abduction/Adduction (HAA), Hip Flexion/Extension (HFE), Knee Flexion/Extension (KFE).
-
-HAA joints are currently locked in simulation — 8 active DOF (HFE + KFE per leg). This simplifies IK to a clean 2D problem per leg.
+Simulated sensors (not on the real robot yet): body tilt/rotation sensor (IMU) and
+a foot-contact sensor on each leg.
 
 ---
 
 ## Roadmap
 
-| Session | Focus | Status |
+| Step | What | Status |
 |---|---|---|
-| 1 | Docker environment + GitHub setup | ✅ Complete |
-| 2 | MJCF robot model in MuJoCo | ✅ Complete |
-| 3 | Inverse Kinematics solver | 🔄 In progress |
-| 4 | Bezier trajectory generator | ⬜ Pending |
-| 5 | Gait scheduler (trot) | ⬜ Pending |
-| 6 | Full locomotion controller — Mini-SPOT walks | ⬜ Pending |
-| 7 | ESP32 hardware bridge | ⬜ Pending |
-| 8 | Jetson Nano integration | ⬜ Pending |
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- [Docker](https://docs.docker.com/get-docker/) installed and running
-- Git
-
-### Setup
-
-**Linux:**
-```bash
-git clone https://github.com/harsh-dudhatra/mini-SPOT
-cd mini-SPOT
-chmod +x run.sh
-./run.sh
-```
-
-**macOS:**
-Install [XQuartz](https://www.xquartz.org) first, then:
-```bash
-xhost +localhost
-git clone https://github.com/harsh-dudhatra/mini-SPOT
-cd mini-SPOT
-chmod +x run.sh
-./run.sh
-```
-
-**Windows:**
-Install [VcXsrv](https://sourceforge.net/projects/vcxsrv/), launch XLaunch with "Disable access control" checked, then:
-```bash
-git clone https://github.com/harsh-dudhatra/mini-SPOT
-cd mini-SPOT
-chmod +x run.sh
-./run.sh
-```
-
-### Run the simulation
-
-```bash
-# Inside the container
-python sim/mujoco_env.py
-```
-
-MuJoCo viewer opens with Mini-SPOT standing on a checkered ground plane.
-Use left mouse to orbit, right mouse to pan, scroll to zoom.
-
-### Drive the robot (walk / trot / turn)
-
-```bash
-python sim/gait_controller.py        # macOS outside Docker: mjpython sim/gait_controller.py
-```
-
-Type commands in the terminal: `walk`, `trot`, `turn left`, `turn right 45`
-(rotate in place by that many degrees, default 90, then stand), `stop`,
-`params`, `set <param> <value>`.
-
-### Reinforcement learning (PPO tunes the Bezier gait parameters)
-
-```bash
-python -m sim.rl_ppo train                 # trains, saves quadruped_bezier_ppo.zip
-python -m sim.rl_ppo test --model quadruped_bezier_ppo
-```
-
-### Tests
-
-```bash
-python -m pytest tests
-```
-
----
-
-## Repo Structure
-
-```
-mini-SPOT/
-├── run.sh                      ← one-command start (X11 + container)
-├── docker/
-│   ├── Dockerfile              ← Python 3.11, MuJoCo, all dependencies
-│   └── docker-compose.yml      ← container config, volume mounts, display
-├── assets/
-│   ├── mini_spot.xml           ← MuJoCo MJCF robot model (pure robot description)
-│   ├── scene.xml               ← simulation world (ground, lighting, skybox)
-│   └── CAD_Files/
-│       └── STL_combined/       ← mesh files for visual geometry
-├── sim/
-│   ├── mujoco_env.py           ← MuJoCo simulation runner
-```
-
----
-
-## Robot Model
-
-The MJCF model (`assets/mini_spot.xml`) describes the full robot:
-
-- Rectangular torso with freejoint (6 DOF in world)
-- 4 legs × 3 bodies (hip, thigh, calf) with real STL mesh geometry
-- 8 active position actuators (HFE + KFE per leg, HAA locked)
-- IMU sensor site on trunk (accelerometer + gyro)
-- Foot force sensor sites on each calf (contact detection)
-- Joint limits matching real servo range: HFE [-0.785, 3.14] rad, KFE [-2.44, -0.916] rad
-- Keyframes: `start` (crouched stand) and `home` (extended)
-
-The scene file (`assets/scene.xml`) includes the robot and adds the world:
-- Checkered ground plane with proper friction
-- Skybox gradient
-- Directional lighting with shadows
-
----
-
-## Tech Stack
-
-| Tool | Role |
-|---|---|
-| Python 3.11 | Primary language |
-| MuJoCo 3.1.6 | Physics simulation |
-| MJCF XML | Robot model format |
-| NumPy / SciPy | Kinematics and math |
-| Matplotlib | Visualization and debugging |
-| Docker | Reproducible environment |
-| ESP32 + MicroPython | Low-level servo control |
-| NVIDIA Jetson Nano | Onboard compute |
-
----
-
-## Architecture
-
-```
-VelocityCommand (vx, vy, yaw)
-    └── GaitScheduler        → phase and swing/stance per leg
-          └── BezierTrajectory → foot target position (x, z)
-                └── IKSolver   → joint angles (θ_HFE, θ_KFE)
-                      └── MuJoCo actuators / ESP32 servos
-```
-
-Physics runs at 1000Hz. Controller runs at 100Hz (every 10 physics steps).
-
----
-
-## Sensors (Simulation)
-
-All sensors are simulation-only
-
-| Sensor | Location | Data | Hardware plan |
-|---|---|---|---|
-| Accelerometer | Trunk | Linear acceleration (m/s²) | Wire IMU to ESP32 via I2C |
-| Gyroscope | Trunk | Angular velocity (rad/s) | Wire IMU to ESP32 via I2C |
-| Foot force | Each calf | 3-axis contact force (N) | Estimate from joint torques |
+| 1 | Docker setup + GitHub | ✅ Done |
+| 2 | Robot model in the simulation | ✅ Done |
+| 3 | Smooth leg curves (Bezier) + walk / trot | ✅ Done |
+| 4 | Turn left / right on command | ✅ Done |
+| 5 | RL to improve the walk | 🔄 In progress |
+| 6 | Put the best RL settings into the controller | ⬜ Next |
+| 7 | Run it on the real robot (ESP32) | ⬜ Later |
+| 8 | Jetson Nano onboard computer | ⬜ Later |
 
 ---
 
 *Bachelor's project — Robotics Engineering, Germany*
-
