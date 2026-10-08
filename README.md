@@ -85,6 +85,29 @@ python sim/mujoco_env.py
 MuJoCo viewer opens with Mini-SPOT standing on a checkered ground plane.
 Use left mouse to orbit, right mouse to pan, scroll to zoom.
 
+### Drive the robot (walk / trot / turn)
+
+```bash
+python sim/gait_controller.py        # macOS outside Docker: mjpython sim/gait_controller.py
+```
+
+Type commands in the terminal: `walk`, `trot`, `turn left`, `turn right 45`
+(rotate in place by that many degrees, default 90, then stand), `stop`,
+`params`, `set <param> <value>`.
+
+### Reinforcement learning (PPO tunes the Bezier gait parameters)
+
+```bash
+python -m sim.rl_ppo train                 # trains, saves quadruped_bezier_ppo.zip
+python -m sim.rl_ppo test --model quadruped_bezier_ppo
+```
+
+### Tests
+
+```bash
+python -m pytest tests
+```
+
 ---
 
 ## Repo Structure
