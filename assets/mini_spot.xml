@@ -120,7 +120,7 @@
     <mesh class="mini-spot" name = "hip" file="Hip_Left.stl" scale="1e-3 1e-3 1e-3"/>
     <mesh class="mini-spot" name = "thigh" file="Thigh_Left.stl" scale="1e-3 1e-3 1e-3"/>
     <mesh class="mini-spot" name = "thigh_mirror" file="Thigh_Right.stl" scale="1e-3 1e-3 1e-3"/>
-    <mesh class="mini-spot" name = "trunk" file="Body_lowres.stl" scale="1e-3 1e-3 1e-3"/>
+    <mesh class="mini-spot" name = "trunk" file="Body.stl" scale="1e-3 1e-3 1e-3"/>
   </asset>
 
   <worldbody>
@@ -137,13 +137,26 @@
 
       <!-- <inertial mass="4.713" pos="0 0.0041 -0.0005"
         fullinertia="0.0158533 0.0377999 0.0456542 -3.66e-05 -6.11e-05 -2.75e-05"/> -->
-      <geom class="visual" mesh="trunk" pos = "0 0.025 0" quat="1 0 0 0" material="orange"/>
-      <geom class="collision" size="0.09 0.07 0.025" type="box"/>
+      <geom class="visual" mesh="trunk" pos = "0 0.005 0" quat="1 0 0 0" material="orange"/>
+      <geom class="collision" size="0.09 0.07 0.025" type="box" mass = "0.45"/>
 
       <!-- Point mass payload -->
       <!-- <body name="trunk_payload" pos="0 0 0">
         <inertial mass="0.4" pos="0 0 0" diaginertia="1e-5 1e-5 1e-5"/>
       </body> -->
+      <!--servo motor inertia 1 x 4 -->
+      <body name="FR_hip_servo_mass" pos="0.055 -0.060 0">
+        <inertial mass="0.075" pos="0 0 0"/>
+      </body>
+      <body name="FL_hip_servo_mass" pos="0.055 0.060 0">
+        <inertial mass="0.075" pos="0 0 0"/>
+      </body>
+      <body name="RR_hip_servo_mass"  pos="-0.055 -0.060 0">
+        <inertial mass="0.075" pos="0 0 0"/>
+      </body>
+      <body name="RL_hip_servo_mass" pos="-0.055 0.060 0">
+        <inertial mass="0.075" pos="0 0 0"/>
+      </body>
 
       <!-- ════════════════════════════════════════════════════════════════
            FRONT RIGHT LEG

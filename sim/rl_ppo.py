@@ -102,7 +102,7 @@ def train(total_episodes, n_steps):
     # render_mode=None: no viewer during training (it would open a window and slow things down)
     venv = make_vec_env(
         lambda: VerboseEpisodeWrapper(QuadrupedBezierEnv(render_mode=None)),
-        n_envs=1,
+        n_envs=6,
     )
     print("obs shape:", venv.observation_space.shape)
 
