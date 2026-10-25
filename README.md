@@ -275,6 +275,19 @@ python -m sim.rl_residual watch --push 80           # watch it in 3D (on a Mac: 
 python -m sim.rl_residual train --gait-params models/best_params.json   # build on stage 1's best settings
 ```
 
+**First result** (3 M training steps ≈ 20 min on a laptop; 20 test episodes of 10 s per row,
+a push every 1.5–3 s, randomized robots not seen in training):
+
+| Push | Bézier only | Bézier + network |
+|---|---|---|
+| none | 20/20 stay up, 1.55 m | 20/20 stay up, 1.26 m |
+| 60 N | 20/20, 1.32 m | 20/20, 1.18 m |
+| **80 N** | **4/20**, 0.74 m | **13/20**, 0.95 m |
+| 100 N | 0/20 | 1/20 |
+
+The network more than triples survival at 80 N. It still walks ~20 % slower without pushes and
+cannot handle 100 N yet — next steps: longer training, rougher terrain, tuning the speed reward.
+
 ---
 
 ## The robot hardware
