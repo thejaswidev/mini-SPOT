@@ -1,5 +1,5 @@
-<!--
-  Mujoco Mini Spot implementation
+<!-- 
+Mujoco Mini Spot implementation
 
   TODO:
   - Add additional / replace / modify inertial masses and inertia tensors based on CAD files
@@ -21,7 +21,7 @@
       <body name="FR_calf" pos="0 0 -0.1">
     Adjust these for all legs to make the model more accurate and closer to the real robot.
 
-  - Adjust joint parameters to reflect the real robot's joint limits, damping, friction, etc.
+   Adjust joint parameters to reflect the real robots joint limits, damping, friction, etc.
     Example:
       <default class="abduction">
         <joint axis="1 0 0" damping="1" range="-0.802851 0.802851"/>
@@ -50,10 +50,7 @@
   - Foot force sensors on each calf: detect ground contact via normal force
     → Will be estimated from joint torques on real hardware (no FSR needed)
   - These sensors are used by the gait controller and state estimator in Sessions 3-6
-    -->
-
-
-
+-->
 <mujoco model="mini-spot">
   <compiler angle="radian" meshdir="CAD_Files/STL_combined" autolimits="true"/>
 
@@ -138,7 +135,7 @@
       <!-- <inertial mass="4.713" pos="0 0.0041 -0.0005"
         fullinertia="0.0158533 0.0377999 0.0456542 -3.66e-05 -6.11e-05 -2.75e-05"/> -->
       <geom class="visual" mesh="trunk" pos = "0 0.005 0" quat="1 0 0 0" material="orange"/>
-      <geom class="collision" size="0.09 0.07 0.025" type="box" mass = "0.45"/>
+      <geom class="collision" size="0.09 0.07 0.025" type="box" mass = "2"/>
 
       <!-- Point mass payload -->
       <!-- <body name="trunk_payload" pos="0 0 0">
@@ -164,7 +161,7 @@
       <body name="FR_hip" pos="0.135 -0.060 0">
         <!-- <inertial mass="0.696" pos="-0.003311 -0.000635 3.1e-05" quat="0.507528 0.506268 0.491507 0.494499"
           diaginertia="0.000807752 0.00055293 0.000468983"/> -->
-        <!-- <joint class="abduction" name="FR_hip_joint"/> -->
+        <joint class="abduction" name="FR_hip_joint"/>
         <geom class="visual" mesh="hip" quat="0 1 0 0" material="orange" />
         <geom class="hip_right"/>
         <body name="FR_thigh" pos="0 -0.046 0">
@@ -195,7 +192,7 @@
       <body name="FL_hip" pos="0.135 0.060 0">
         <!-- <inertial mass="0.696" pos="-0.003311 0.000635 3.1e-05" quat="0.494499 0.491507 0.506268 0.507528"
           diaginertia="0.000807752 0.00055293 0.000468983"/> -->
-        <!-- <joint class="abduction" name="FL_hip_joint"/> -->
+        <joint class="abduction" name="FL_hip_joint"/>
         <geom class="visual" mesh="hip" material="orange"/>
         <geom class="hip_left"/>
         <body name="FL_thigh" pos="0 0.046 0">
@@ -226,7 +223,7 @@
       <body name="RR_hip" pos="-0.135 -0.060 0">
         <!-- <inertial mass="0.696" pos="0.003311 -0.000635 3.1e-05" quat="0.491507 0.494499 0.507528 0.506268"
           diaginertia="0.000807752 0.00055293 0.000468983"/> -->
-        <!-- <joint class="abduction" name="RR_hip_joint"/> -->
+        <joint class="abduction" name="RR_hip_joint"/>
         <geom class="visual" quat="0 0 0 -1" mesh="hip" material="orange"/>
         <geom class="hip_right"/>
         <body name="RR_thigh" pos="0 -0.046 0">
@@ -257,7 +254,7 @@
       <body name="RL_hip" pos="-0.13 0.060 0">
         <!-- <inertial mass="0.696" pos="0.003311 0.000635 3.1e-05" quat="0.506268 0.507528 0.494499 0.491507"
           diaginertia="0.000807752 0.00055293 0.000468983"/> -->
-        <!-- <joint class="abduction" name="RL_hip_joint"/> -->
+        <joint class="abduction" name="RL_hip_joint"/>
         <geom class="visual" quat="0 0 1 0" mesh="hip" material="orange"/>
         <geom class="hip_left"/>
         <body name="RL_thigh" pos="0 0.046 0">
@@ -287,16 +284,16 @@
 
   <actuator>
     <!-- HAA (abduction) joints are commented out — range locked to 0, not actuated -->
-    <!-- <position class="abduction" name="FR_hip" joint="FR_hip_joint"/> -->
+    <position class="abduction" name="FR_hip" joint="FR_hip_joint"/>
     <position class="hip"  name="FR_thigh" joint="FR_thigh_joint"/>
     <position class="knee" name="FR_calf"  joint="FR_calf_joint"/>
-    <!-- <position class="abduction" name="FL_hip" joint="FL_hip_joint"/> -->
+    <position class="abduction" name="FL_hip" joint="FL_hip_joint"/>
     <position class="hip"  name="FL_thigh" joint="FL_thigh_joint"/>
     <position class="knee" name="FL_calf"  joint="FL_calf_joint"/>
-    <!-- <position class="abduction" name="RR_hip" joint="RR_hip_joint"/> -->
+    <position class="abduction" name="RR_hip" joint="RR_hip_joint"/>
     <position class="hip"  name="RR_thigh" joint="RR_thigh_joint"/>
     <position class="knee" name="RR_calf"  joint="RR_calf_joint"/>
-    <!-- <position class="abduction" name="RL_hip" joint="RL_hip_joint"/> -->
+    <position class="abduction" name="RL_hip" joint="RL_hip_joint"/>
     <position class="hip"  name="RL_thigh" joint="RL_thigh_joint"/>
     <position class="knee" name="RL_calf"  joint="RL_calf_joint"/>
   </actuator>
@@ -328,8 +325,8 @@
   </sensor>
 
   <keyframe>
-    <key name="home"  ctrl="3.14 -2.17 3.14 -2.17 3.14 -2.17 3.14 -2.17"/>
-    <key name="start" ctrl="0.687 0 0.687 0 0.687 0 0.687 0"/>
+    <key name="home"  ctrl="3.14 -2.17 3.14 -2.17 3.14 -2.17 3.14 -2.17 0 0 0 0"/>
+    <key name="start" ctrl="0.687 0 0.687 0 0.687 0 0.687 0 0 0 0 0"/>
   </keyframe>
 
 </mujoco>
