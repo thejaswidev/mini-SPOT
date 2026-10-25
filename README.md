@@ -13,13 +13,16 @@ learning (RL) is being added to find a smoother, better walking style.
 
 ## The 30-second version
 
-- The robot has **4 legs**, each with **2 motors**: a **shoulder** (swings the leg forward/back)
-  and a **knee** (bends the leg). 4 × 2 = **8 motors**.
+- The robot has **4 legs**, each with **3 motors**: a **sideways hip**, a **shoulder** (swings the
+  leg forward/back) and a **knee** (bends the leg). 4 × 3 = **12 motors**. The walking gait uses
+  the shoulder and knee; the sideways hips are used by the RL corrections.
 - Walking = moving each leg in a repeating loop: **lift it, swing it forward, put it down, push back**.
   Doing this with the 4 legs at different times makes the body move forward.
 - **Turning** = left legs and right legs push in opposite directions, so the body spins on the spot.
-- **RL** = the computer tries thousands of different walking settings (step length, speed, knee bend…)
-  and keeps the ones that make the robot walk fast, straight and steady.
+- **RL, stage 1** = the computer tries thousands of different walking settings (step length, speed,
+  knee bend…) and keeps the ones that make the robot walk fast, straight and steady.
+- **RL, stage 2** = a small neural network watches the IMU and foot sensors 50× per second and adds
+  small corrections to every motor, so the robot recovers when it is pushed.
 
 ---
 
@@ -30,16 +33,19 @@ learning (RL) is being added to find a smoother, better walking style.
 | File | What it is | When to use it |
 |---|---|---|
 | `sim/gait_controller.py` | **Drive the robot yourself.** Opens a 3D window; you type `walk`, `turn left`, `stop`… | To watch the robot move and test gaits by hand |
-| `sim/rl_ppo.py` | **Train / test the RL brain.** Lets the computer learn the best walking settings | To improve the walk automatically |
+| `sim/rl_ppo.py` | **RL stage 1.** Learns the best 6 walking settings | To improve the base walk |
+| `sim/rl_residual.py` | **RL stage 2.** Trains / tests the correction network (push recovery) | To make the walk robust |
 | `sim/mujoco_env.py` | **Just show the robot standing.** The simplest viewer | To check the robot model loads |
-| `tests/test_gait_controller.py` | **Automatic checks.** Turns the robot and walks circles without a window, and checks the angle / circle size are right | After changing code, to make sure nothing broke |
+| `tests/` | **Automatic checks.** Turning angle, circle size, and the RL stage 2 environment | After changing code, to make sure nothing broke |
 
 ### The files the others use (you don't run these directly)
 
 | File | What it is |
 |---|---|
 | `sim/bezier_helpers.py` | **The gait math.** Says where every leg should be at every moment (the smooth leg curves and the timing between legs). Shared by both the manual controller and RL. |
-| `sim/gym_class.py` | **The RL training ground.** Takes a set of walking settings, lets the robot walk with them for 20 s in the simulation, and gives back a **score**. |
+| `sim/gym_class.py` | **RL stage 1 training ground.** Takes a set of walking settings, lets the robot walk with them for 20 s in the simulation, and gives back a **score**. |
+| `sim/residual_env.py` | **RL stage 2 training ground.** Runs the Bézier gait, adds the network's corrections every 1/50 s, pushes the robot around and scores how well it stays up and keeps walking. |
+| `3dbezierhelpers.py` | **Alternative gait (from the D²-GMBC paper)** — Bézier curves for the foot position in 3D + inverse kinematics. Standalone demo for now. |
 | `assets/mini_spot.xml` | **The robot itself**: body, legs, motors, sensors, joint limits. |
 | `assets/scene.xml` | **The world**: floor, light, sky. It loads the robot. |
 | `assets/CAD_Files/` | 3D shapes of the real robot parts (used to draw the robot). |
@@ -61,25 +67,28 @@ learning (RL) is being added to find a smoother, better walking style.
                       (the world)                   (the robot)
                              ▲
                              │ every script loads the world + robot
-        ┌────────────────────┼─────────────────────────┐
-        │                    │                         │
- sim/mujoco_env.py   sim/gait_controller.py      sim/gym_class.py ◄── used by ── sim/rl_ppo.py
- (just stands)       (YOU give commands)         (scores a walk)                 (RL learns)
-                             │                         │
-                             └──────── both use ───────┘
-                                          ▼
-                                sim/bezier_helpers.py
-                                (where each leg goes, when)
+        ┌────────────────────┼─────────────────────────┬──────────────────────────────┐
+        │                    │                         │                              │
+ sim/mujoco_env.py   sim/gait_controller.py      sim/gym_class.py                sim/residual_env.py
+ (just stands)       (YOU give commands)         (scores a set of settings)      (scores the corrections)
+                             │                    ▲ used by sim/rl_ppo.py         ▲ used by sim/rl_residual.py
+                             │                    │   RL STAGE 1                  │   RL STAGE 2
+                             └──────── all use ───┴───────────┬───────────────────┘
+                                                              ▼
+                                                    sim/bezier_helpers.py
+                                                    (where each leg goes, when)
 ```
 
-**Two separate ways to move the robot:**
+**Three pieces:**
 
-1. **Manual** – `gait_controller.py`: fixed rules. You give commands, it walks / turns.
-2. **Learned** – `rl_ppo.py` + `gym_class.py`: RL searches for the best walking settings.
+1. **Manual** – `gait_controller.py`: fixed rules. You give commands, it walks / turns / circles.
+2. **RL stage 1** – `rl_ppo.py` + `gym_class.py`: finds the best 6 walking settings (open loop:
+   picked once, then the robot just walks).
+3. **RL stage 2** – `rl_residual.py` + `residual_env.py`: a network that reacts to the sensors
+   50× per second and corrects the gait (closed loop: handles pushes).
 
 Turning is **only manual** on purpose. RL only learns forward walking, so turning
-can't mess up the walking training. The plan: let RL find the best walking settings,
-then put them into the manual controller (`set …` command), and keep turning as is.
+can't mess up the walking training.
 
 ---
 
@@ -177,8 +186,8 @@ The swing follows a smooth **Bezier curve**, so the leg moves smoothly instead o
 | Walk | one leg at a time | slow, very stable |
 | Trot | diagonal pairs together (front-right + rear-left, then front-left + rear-right) | faster |
 
-**Turning on the spot** – the sideways hip joints are locked, so the robot can't step
-sideways. It turns like a tank instead:
+**Turning on the spot** – the gait keeps the sideways hips straight, so the robot doesn't
+step sideways. It turns like a tank instead:
 
 ```
   turn left:   left legs step BACKWARD,  right legs step FORWARD   → body spins left
@@ -186,7 +195,8 @@ sideways. It turns like a tank instead:
 ```
 
 While turning, the controller keeps checking which way the body points. When it has
-rotated the requested angle, it stops and stands. Accuracy is about ±2.5°.
+rotated the requested angle, it stops and stands. Once it has settled it measures again and
+makes a small correction turn if needed. Accuracy is about ±2°.
 
 **Walking in a circle** – the robot trots forward, but the legs on the **inside** of the
 circle take **shorter steps** than the outside legs, so the path bends (like a car where
@@ -224,15 +234,46 @@ asked for (accurate to a few cm). A 1 m circle takes a bit over a minute.
 The algorithm is **PPO** (from the `stable-baselines3` library).
 
 ```bash
-python -m sim.rl_ppo train                       # default 2000 tries, saves quadruped_bezier_ppo.zip
+python -m sim.rl_ppo train                       # default 20000 tries, saves quadruped_bezier_ppo.zip
 python -m sim.rl_ppo train --episodes 500        # fewer tries
 python -m sim.rl_ppo test                        # no model: tries the middle value of every setting
 python -m sim.rl_ppo test --model quadruped_bezier_ppo   # test the trained model
 python -m sim.rl_ppo test --no-render            # without the 3D window
 ```
 
-Every try prints the settings it used, whether the robot fell, its speed, and the
-best settings found so far.
+Training runs 6 simulations in parallel, logs every try to `models/episodes.csv` and saves
+the best settings to `models/best_params.json`.
+
+### RL stage 2: corrections for push recovery (`rl_residual.py`)
+
+Stage 1 picks the settings **once** — it cannot react if someone pushes the robot. Stage 2 adds a
+small neural network that runs **all the time** (50× per second):
+
+```
+  IMU (tilt + rotation speed) ─┐
+  4 foot-contact sensors ──────┼──►  neural network  ──►  small correction (delta) for each of the 12 motors
+  gait clock + last action ────┘                                   │
+                                                                   ▼
+             Bézier gait (stage 1 settings)  ──►  joint targets  + delta  ──►  servos
+```
+
+- **Inputs** are only sensors the real robot has (BNO055 IMU, 4× FSR402), so the same network can
+  run on the hardware later.
+- **Outputs** are corrections of at most ±0.25 rad, added on top of the Bézier gait — the gait
+  does the walking, the network only fixes mistakes. It can also use the sideways hips.
+- **Training happens only in the simulation**, with random pushes (30–110 N), and with friction,
+  body mass, motor strength, sensor noise and servo delay changed every episode. A network that
+  copes with all of that in simulation has a much better chance on the real robot
+  ("sim-to-real"). Training on the real robot itself would need thousands of falls.
+- **Score:** ➕ walking at ~0.15 m/s, staying upright and at the right height, not falling;
+  ➖ big corrections and jerky corrections (it should stay close to the Bézier gait).
+
+```bash
+python -m sim.rl_residual train                     # 2 M steps, 8 parallel sims, saves models/residual_ppo.zip
+python -m sim.rl_residual eval                      # Bézier only vs Bézier + network, pushes of 60 / 80 / 100 N
+python -m sim.rl_residual watch --push 80           # watch it in 3D (on a Mac: .venv/bin/mjpython -m sim.rl_residual watch)
+python -m sim.rl_residual train --gait-params models/best_params.json   # build on stage 1's best settings
+```
 
 ---
 
@@ -246,11 +287,12 @@ best settings found so far.
 | Battery | LiPo |
 | Planned onboard computer | NVIDIA Jetson Nano |
 
-Each real leg has 3 motors: **sideways hip**, **shoulder**, **knee**. In the
-simulation the sideways hip is **locked**, so only 8 motors move (shoulder + knee per leg).
+Each leg has 3 motors: **sideways hip**, **shoulder**, **knee** — all 12 are in the simulation.
+The Bézier gait drives shoulder + knee and keeps the sideways hips straight; the stage 2 network
+may move all 12.
 
-Simulated sensors (not on the real robot yet): body tilt/rotation sensor (IMU) and
-a foot-contact sensor on each leg.
+Sensors: BNO055 IMU (tilt, rotation speed) and 4× FSR402 foot-contact sensors — simulated now,
+on the robot later.
 
 ---
 
@@ -262,10 +304,10 @@ a foot-contact sensor on each leg.
 | 2 | Robot model in the simulation | ✅ Done |
 | 3 | Smooth leg curves (Bezier) + walk / trot | ✅ Done |
 | 4 | Turn left / right and walk in circles on command | ✅ Done |
-| 5 | RL to improve the walk | 🔄 In progress |
-| 6 | Put the best RL settings into the controller | ⬜ Next |
-| 7 | Run it on the real robot (ESP32) | ⬜ Later |
-| 8 | Jetson Nano onboard computer | ⬜ Later |
+| 5 | RL stage 1: best walking settings | 🔄 In progress |
+| 6 | RL stage 2: corrections for push recovery (sim) | 🔄 In progress |
+| 7 | Rougher terrain in training (bumps, slopes) | ⬜ Next |
+| 8 | Run it on the real robot (Jetson runs the network, ESP32 the servos) | ⬜ Later |
 
 ---
 

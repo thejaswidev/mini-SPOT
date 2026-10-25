@@ -40,3 +40,9 @@ logs/
 docker/data/
 .venv/
 quadruped_bezier_ppo.zip
+
+# RL outputs
+models/
+quadruped_bezier_ppo*.zip
+residual_ppo*.zip
+sim/tempCodeRunnerFile.py
