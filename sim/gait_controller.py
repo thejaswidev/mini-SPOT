@@ -44,7 +44,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from sim.bezier_helpers import (  # noqa: E402
     KNEE_MAX,
     KNEE_MIN,
-    LEGS,
+    legs_for_model,
     TROT_OFFSETS,
     WALK_OFFSETS,
     compute_leg,
@@ -88,6 +88,8 @@ GAITS = {
 
 DEFAULT_TURN_DEG = 90.0
 TURN_TOLERANCE_DEG = 2.0     # stop this close to the target (the body coasts the rest)
+TURN_SETTLE_S = 0.7          # after stopping, wait this long, re-measure and correct if needed
+TURN_MAX_CORRECTIONS = 3
 
 DEFAULT_CIRCLE_RADIUS = 1.0  # m
 MIN_CIRCLE_RADIUS = 0.6      # m, tighter than this the steering maxes out (measured ~0.55 m)
@@ -121,6 +123,7 @@ class GaitController:
         self.data = data
         self.p = dict(GAIT_PARAMS if params is None else params)
         self.control_period = 1.0 / CONTROL_FREQUENCY
+        self.legs = legs_for_model(model)   # ctrl indices by actuator name (8- or 12-actuator model)
 
         free = [j for j in range(model.njnt) if model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE]
         self.root_qpos = model.jnt_qposadr[free[0]]
@@ -129,7 +132,12 @@ class GaitController:
         self.phase = 0.0
         self.turn_dir = 0          # +1 left (CCW), -1 right (CW)
         self.turn_target = 0.0     # rad, absolute amount still to turn
-        self.turned = 0.0          # rad, signed yaw accumulated in this turn
+        self.turned = 0.0          # rad, signed yaw accumulated in this turn (or correction)
+        self.turn_goal = None      # rad, signed total rotation requested; None = no turn running
+        self.turn_total = 0.0      # rad, signed yaw accumulated since the turn command
+        self.turn_corrections = 0
+        self.turn_check_at = None  # sim time at which the settled heading is re-measured
+        self.turn_scale = 1.0      # step-length factor; small for correction turns
         self.prev_yaw = 0.0
         self.circle_dir = 0        # +1 left (CCW), -1 right (CW)
         self.circle_radius = DEFAULT_CIRCLE_RADIUS
@@ -163,21 +171,38 @@ class GaitController:
             mujoco.mj_step(self.model, self.data)
 
     def stand(self):
+        self.turn_goal = None
         self._change_mode("stand")
 
     def walk(self, gait="walk"):
+        self.turn_goal = None
         self._change_mode(gait)
 
     def turn(self, direction, degrees=DEFAULT_TURN_DEG):
-        """direction: "left" | "right". Rotates in place by `degrees`, then stands."""
-        self.turn_dir = 1 if direction == "left" else -1
-        self.turn_target = np.radians(abs(degrees))
-        self.turned = 0.0
+        """direction: "left" | "right". Rotates in place by `degrees`, then stands.
+
+        Stopping mid-stride lets the body drift a few degrees while the legs return to the
+        standing pose, so once settled the heading is re-measured and small correction
+        turns are made until it is within TURN_TOLERANCE_DEG.
+        """
+        self.turn_goal = (1 if direction == "left" else -1) * np.radians(abs(degrees))
+        self.turn_total = 0.0
+        self.turn_corrections = 0
         self.prev_yaw = self.yaw()
+        self._start_turn(self.turn_goal)
+
+    def _start_turn(self, angle, correction=False):
+        # correction turns take short steps: smaller steps leave less drift when stopping
+        self.turn_scale = float(np.clip(abs(angle) / np.radians(30), 0.25, 1.0)) if correction else 1.0
+        self.turn_dir = 1 if angle > 0 else -1
+        self.turn_target = abs(angle)
+        self.turned = 0.0
+        self.turn_check_at = None
         self._change_mode("turn")
 
     def circle(self, direction, radius=DEFAULT_CIRCLE_RADIUS):
         """direction: "left" | "right". Walks in a circle of `radius` metres until stop."""
+        self.turn_goal = None
         self.circle_dir = 1 if direction == "left" else -1
         self.circle_radius = max(abs(radius), MIN_CIRCLE_RADIUS)
         # first guess for the steering amount (measured in the sim), then feedback corrects it
@@ -222,17 +247,18 @@ class GaitController:
 
     # -------------------------------------------------- gait maths
     def _stand_targets(self):
-        return [(self.p["shoulder_home"], self.p["knee_home"])] * len(LEGS)
+        return [(self.p["shoulder_home"], self.p["knee_home"])] * len(self.legs)
 
     def _gait_targets(self):
         offsets, swing_frac = GAITS[self.mode]
         targets = []
-        for i, leg in enumerate(LEGS):
+        for i, leg in enumerate(self.legs):
             sweep = self.p["shoulder_sweep"]
             if self.mode == "turn":
                 # turn left: left legs step backward, right legs forward (and vice versa).
                 # A negative sweep makes compute_leg swap forward and back.
                 backward = leg["left"] if self.turn_dir > 0 else not leg["left"]
+                sweep *= self.turn_scale
                 if backward:
                     sweep = -sweep
             elif self.mode == "circle":
@@ -245,10 +271,10 @@ class GaitController:
         return targets
 
     def _current_ctrl(self):
-        return [(self.data.ctrl[leg["sh"]], self.data.ctrl[leg["kn"]]) for leg in LEGS]
+        return [(self.data.ctrl[leg["sh"]], self.data.ctrl[leg["kn"]]) for leg in self.legs]
 
     def _write_targets(self, targets):
-        for leg, (sh, kn) in zip(LEGS, targets):
+        for leg, (sh, kn) in zip(self.legs, targets):
             self.data.ctrl[leg["sh"]] = sh
             self.data.ctrl[leg["kn"]] = kn
 
@@ -260,13 +286,26 @@ class GaitController:
             dt = self.control_period if np.isfinite(self.last_control) else 0.0
             self.last_control = self.data.time
 
-            if self.mode == "turn":
+            if self.turn_goal is not None:
                 y = self.yaw()
-                self.turned += wrap(y - self.prev_yaw)
+                d_yaw = wrap(y - self.prev_yaw)
                 self.prev_yaw = y
-                if abs(self.turned) >= self.turn_target - np.radians(TURN_TOLERANCE_DEG):
-                    msg = f">> Turn done: rotated {np.degrees(self.turned):+.1f} deg"
-                    self._change_mode("stand")
+                self.turn_total += d_yaw
+                if self.mode == "turn":
+                    self.turned += d_yaw
+                    if abs(self.turned) >= self.turn_target - np.radians(TURN_TOLERANCE_DEG):
+                        self._change_mode("stand")
+                        self.turn_check_at = self.data.time + TRANSITION_TIME + TURN_SETTLE_S
+                elif self.turn_check_at is not None and self.data.time >= self.turn_check_at:
+                    error = self.turn_goal - self.turn_total
+                    if (abs(error) > np.radians(TURN_TOLERANCE_DEG)
+                            and self.turn_corrections < TURN_MAX_CORRECTIONS):
+                        self.turn_corrections += 1
+                        self._start_turn(error, correction=True)
+                    else:
+                        msg = f">> Turn done: rotated {np.degrees(self.turn_total):+.1f} deg"
+                        self.turn_goal = None
+                        self.turn_check_at = None
             elif self.mode == "circle" and dt > 0:
                 self._update_steering(dt)
 

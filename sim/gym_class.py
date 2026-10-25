@@ -39,7 +39,7 @@ from gymnasium import spaces
 import mujoco
 
 from .bezier_helpers import (
-    LEGS,
+    legs_for_model,
     PARAM_HIGH,
     PARAM_LOW,
     PARAM_NAMES,
@@ -94,7 +94,10 @@ class QuadrupedBezierEnv(gym.Env):
 
         # --- indices -----------------------------------------------------
         m = self.model
-        jids = m.actuator_trnid[:8, 0]
+        self.legs = legs_for_model(m)
+        # observed joints: shoulder (HFE) + knee (KFE) of each leg, found by actuator name
+        self.j_act = np.array([leg[k] for leg in self.legs for k in ("sh", "kn")])
+        jids = m.actuator_trnid[self.j_act, 0]
         self.j_qpos = m.jnt_qposadr[jids]
         self.j_dof = m.jnt_dofadr[jids]
 
@@ -154,7 +157,7 @@ class QuadrupedBezierEnv(gym.Env):
 
     def _apply_gait(self):
         p = dict(zip(PARAM_NAMES, self.params))
-        for i, leg in enumerate(LEGS):
+        for i, leg in enumerate(self.legs):
             sweep = p["sweep_left"] if leg["left"] else p["sweep_right"]
             ph = (self.phase + self.offsets[i]) % 1.0
             sh, kn = compute_leg(p, sweep, ph, self.swing_frac)
@@ -194,7 +197,7 @@ class QuadrupedBezierEnv(gym.Env):
         self.step_count = 0
 
         # home pose + settle (as in set_home)
-        for leg in LEGS:
+        for leg in self.legs:
             self.data.ctrl[leg["sh"]] = self.params[0]
             self.data.ctrl[leg["kn"]] = self.params[3]
         for _ in range(100):
@@ -239,7 +242,7 @@ class QuadrupedBezierEnv(gym.Env):
                 heights.append(self.data.qpos[self.root_qpos + 2])
                 orients.append(np.sum(grav[:2] ** 2))
                 energy += float(np.sum(np.abs(
-                    self.data.actuator_force[:8] * self.data.qvel[self.j_dof])))
+                    self.data.actuator_force[self.j_act] * self.data.qvel[self.j_dof])))
 
                 if self.render_mode == "human":
                     self.render()

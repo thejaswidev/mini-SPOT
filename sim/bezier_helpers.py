@@ -34,13 +34,36 @@ PARAM_HIGH = np.array([1.20, 0.60, 0.60, -0.916298, -0.916298, 2.00])
 
 KNEE_MIN, KNEE_MAX = -2.69653, -0.916298
 
-# ctrl layout: [FR_sh, FR_kn, FL_sh, FL_kn, RR_sh, RR_kn, RL_sh, RL_kn]
+# ctrl layout of the old 8-actuator model: [FR_sh, FR_kn, FL_sh, FL_kn, RR_sh, RR_kn, RL_sh, RL_kn].
+# Use legs_for_model() instead: it looks the actuators up by name, so it also works with
+# the 12-actuator model (HAA hip actuators enabled) where these indices are wrong.
 LEGS = [
     {"name": "FR", "sh": 0, "kn": 1, "left": False},
     {"name": "FL", "sh": 2, "kn": 3, "left": True},
     {"name": "RR", "sh": 4, "kn": 5, "left": False},
     {"name": "RL", "sh": 6, "kn": 7, "left": True},
 ]
+
+
+def legs_for_model(model):
+    """LEGS with ctrl indices resolved by actuator name for this MuJoCo model.
+
+    sh = "<leg>_thigh" (HFE), kn = "<leg>_calf" (KFE), haa = "<leg>_hip", or None when
+    the model has no sideways hip actuator.
+    """
+    import mujoco
+
+    def actuator(name):
+        i = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+        return None if i < 0 else int(i)
+
+    legs = []
+    for leg in LEGS:
+        sh, kn = actuator(f"{leg['name']}_thigh"), actuator(f"{leg['name']}_calf")
+        if sh is None or kn is None:
+            raise ValueError(f"model has no {leg['name']}_thigh / {leg['name']}_calf actuator")
+        legs.append(dict(leg, sh=sh, kn=kn, haa=actuator(f"{leg['name']}_hip")))
+    return legs
 
 
 def compute_leg(p, sweep, phase, swing_frac):
