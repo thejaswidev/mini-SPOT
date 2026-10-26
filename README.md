@@ -269,11 +269,14 @@ small neural network that runs **all the time** (50× per second):
   ➖ big corrections and jerky corrections (it should stay close to the Bézier gait).
 
 ```bash
-python -m sim.rl_residual train                     # 2 M steps, 8 parallel sims, saves models/residual_ppo.zip
+python -m sim.rl_residual train                     # 3 M steps (~20 min), 8 parallel sims, saves models/residual_ppo.zip
 python -m sim.rl_residual eval                      # Bézier only vs Bézier + network, pushes of 60 / 80 / 100 N
 python -m sim.rl_residual watch --push 80           # watch it in 3D (on a Mac: .venv/bin/mjpython -m sim.rl_residual watch)
+python -m sim.rl_residual eval --model models/residual_ckpt_2000000_steps   # test a checkpoint (saved every 250 k steps)
 python -m sim.rl_residual train --gait-params models/best_params.json   # build on stage 1's best settings
 ```
+
+Stopping training with Ctrl+C saves to `models/residual_ppo_interrupted` — the finished model is not overwritten.
 
 **First result** (3 M training steps ≈ 20 min on a laptop; 20 test episodes of 10 s per row,
 a push every 1.5–3 s, randomized robots not seen in training):

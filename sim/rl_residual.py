@@ -1,10 +1,14 @@
 """Train / evaluate the closed-loop residual policy (Bezier gait + learned corrections).
 
     python -m sim.rl_residual train                         # PPO, 8 parallel sims, saves models/residual_ppo.zip
-    python -m sim.rl_residual train --steps 3000000
+    python -m sim.rl_residual train --steps 1000000         # shorter run
     python -m sim.rl_residual eval                          # Bezier only vs Bezier + policy under pushes
     python -m sim.rl_residual eval --push 100 --episodes 20
     python -m sim.rl_residual watch                         # viewer (on macOS run with mjpython)
+    python -m sim.rl_residual eval --model models/residual_ckpt_2000000_steps   # use a checkpoint
+
+Ctrl+C during training saves to models/residual_ppo_interrupted, so a finished model is never
+overwritten by a partial one. Every checkpoint saves its own normalisation file next to it.
     python -m sim.rl_residual train --gait-params models/best_params.json   # build on rl_ppo's best gait
 
 One step = one control tick (50 Hz). See sim/residual_env.py for obs / action / reward.
@@ -44,23 +48,43 @@ def train(total_steps, n_envs, gait_params):
         policy_kwargs=dict(net_arch=[128, 128], log_std_init=-1.0),   # start with small corrections
     )
     checkpoint = CheckpointCallback(save_freq=max(1, 250_000 // n_envs), save_path=str(MODELS_DIR),
-                                    name_prefix="residual_ckpt")
+                                    name_prefix="residual_ckpt", save_vecnormalize=True)
+    model_path = MODEL_PATH
     try:
         model.learn(total_timesteps=total_steps, callback=checkpoint)
+    except KeyboardInterrupt:
+        model_path = MODEL_PATH.with_name(MODEL_PATH.name + "_interrupted")
+        print(f"\ninterrupted at {model.num_timesteps} steps")
     finally:
-        model.save(str(MODEL_PATH))
-        venv.save(str(NORM_PATH))
+        model.save(str(model_path))
+        venv.save(str(norm_path_for(model_path)))
         venv.close()
-        print(f"saved {MODEL_PATH}.zip and {NORM_PATH}")
+        print(f"saved {model_path}.zip and {norm_path_for(model_path)}")
 
 
-def load_policy():
+def norm_path_for(model_path):
+    """The observation-normalisation file that belongs to a model / checkpoint."""
+    model_path = Path(str(model_path).removesuffix(".zip"))
+    if model_path == MODEL_PATH:
+        return NORM_PATH
+    if model_path.name.startswith("residual_ckpt_"):     # SB3 checkpoint naming
+        steps = model_path.name.removeprefix("residual_ckpt_")
+        return model_path.with_name(f"residual_ckpt_vecnormalize_{steps}.pkl")
+    return model_path.with_name(model_path.name + "_vecnormalize.pkl")
+
+
+def load_policy(model_path=MODEL_PATH):
     """Returns act(obs) -> action, using the saved obs normalisation."""
     import pickle
     from stable_baselines3 import PPO
 
-    model = PPO.load(str(MODEL_PATH), device="cpu")
-    with open(NORM_PATH, "rb") as f:
+    model_path = Path(str(model_path).removesuffix(".zip"))
+    norm_path = norm_path_for(model_path)
+    if not norm_path.exists():
+        raise FileNotFoundError(f"{norm_path} is missing: it holds the input normalisation for "
+                                f"{model_path}.zip (checkpoints from before this fix don't have one)")
+    model = PPO.load(str(model_path), device="cpu")
+    with open(norm_path, "rb") as f:
         norm = pickle.load(f)
     rms, clip, eps = norm.obs_rms, norm.clip_obs, norm.epsilon
 
@@ -86,8 +110,8 @@ def run_episodes(act, push, episodes, gait_params, randomize=True):
     return episodes - falls, float(np.mean(dist))
 
 
-def evaluate(pushes, episodes, gait_params):
-    act = load_policy()
+def evaluate(pushes, episodes, gait_params, model_path):
+    act = load_policy(model_path)
     print(f"{episodes} episodes of 10 s per row, one push every 1.5-3 s, randomized robot")
     print(f"{'push':>6} | {'Bezier only':>22} | {'Bezier + policy':>22}")
     for push in pushes:
@@ -100,9 +124,9 @@ def evaluate(pushes, episodes, gait_params):
               f"survived {pol[0]:>2}/{episodes}, {pol[1]:+.2f} m")
 
 
-def watch(push, gait_params):
+def watch(push, gait_params, model_path):
     import time
-    act = load_policy()
+    act = load_policy(model_path)
     env = ResidualGaitEnv(gait_params=gait_params, render_mode="human", push_force=(push, push))
     obs, _ = env.reset()
     while True:
@@ -117,22 +141,24 @@ def watch(push, gait_params):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("mode", choices=("train", "eval", "watch"))
-    parser.add_argument("--steps", type=int, default=2_000_000, help="train: total control steps")
+    parser.add_argument("--steps", type=int, default=3_000_000, help="train: total control steps")
     parser.add_argument("--envs", type=int, default=8, help="train: parallel simulations")
     parser.add_argument("--push", type=float, nargs="+", default=[60, 80, 100],
                         help="eval/watch: push force(s) in N")
     parser.add_argument("--episodes", type=int, default=12, help="eval: episodes per push force")
     parser.add_argument("--gait-params", type=str, default=None,
                         help="best_params.json from sim.rl_ppo (default: hand-tuned gait)")
+    parser.add_argument("--model", type=str, default=str(MODEL_PATH),
+                        help="eval/watch: model or checkpoint to load (default models/residual_ppo)")
     args = parser.parse_args()
     gait_params = load_gait_params(args.gait_params) if args.gait_params else None
 
     if args.mode == "train":
         train(args.steps, args.envs, gait_params)
     elif args.mode == "eval":
-        evaluate(args.push, args.episodes, gait_params)
+        evaluate(args.push, args.episodes, gait_params, args.model)
     else:
-        watch(args.push[0], gait_params)
+        watch(args.push[0], gait_params, args.model)
 
 
 if __name__ == "__main__":
