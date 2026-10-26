@@ -250,14 +250,13 @@ Stage 1 picks the settings **once** — it cannot react if someone pushes the ro
 small neural network that runs **all the time** (50× per second):
 
 ```
-  IMU (tilt + rotation speed) ─┐
-  4 foot-contact sensors ──────┼──►  neural network  ──►  small correction (delta) for each of the 12 motors
+  IMU (tilt + rotation speed) ─┬──►  neural network  ──►  small correction (delta) for each of the 12 motors
   gait clock + last action ────┘                                   │
                                                                    ▼
              Bézier gait (stage 1 settings)  ──►  joint targets  + delta  ──►  servos
 ```
 
-- **Inputs** are only sensors the real robot has (BNO055 IMU, 4× FSR402), so the same network can
+- **Inputs** are only the BNO055 IMU (no foot sensors) plus the gait clock, so the same network can
   run on the hardware later.
 - **Outputs** are corrections of at most ±0.25 rad, added on top of the Bézier gait — the gait
   does the walking, the network only fixes mistakes. It can also use the sideways hips.
@@ -308,7 +307,7 @@ Each leg has 3 motors: **sideways hip**, **shoulder**, **knee** — all 12 are i
 The Bézier gait drives shoulder + knee and keeps the sideways hips straight; the stage 2 network
 may move all 12.
 
-Sensors: BNO055 IMU (tilt, rotation speed) and 4× FSR402 foot-contact sensors — simulated now,
+Sensors: BNO055 IMU (tilt, rotation speed) — simulated now,
 on the robot later.
 
 ---

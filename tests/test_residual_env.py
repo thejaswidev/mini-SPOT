@@ -19,8 +19,8 @@ def run(env, steps=None):
 def test_observation_is_sensor_only():
     env = ResidualGaitEnv()
     obs, _ = env.reset(seed=0)
-    # gravity 3 + gyro 3 + foot contacts 4 + phase 2 + previous action (one per actuator)
-    assert obs.shape == (12 + env.nu,)
+    # gravity 3 + gyro 3 + phase 2 + previous action (one per actuator)
+    assert obs.shape == (8 + env.nu,)
     assert env.action_space.shape == (env.nu,)
 
 

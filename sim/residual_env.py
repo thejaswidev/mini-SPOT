@@ -10,7 +10,6 @@ Closed-loop residual RL environment: Bezier gait + learned corrections, for push
   obs (only sensors the hardware has, so the policy can run on the robot unchanged):
       projected gravity (3)   BNO055 orientation -> which way is down, in the body frame
       gyro (3)                BNO055 angular rates
-      foot contact (4)        4x FSR402
       gait phase sin/cos (2)  the gait clock
       previous action (nu)    what the policy did last step
   (no joint encoders on hobby servos, no body velocity: those are only used in the reward)
@@ -103,9 +102,6 @@ class ResidualGaitEnv(gym.Env):
         self.root_qpos = m.jnt_qposadr[free]
         self.root_dof = m.jnt_dofadr[free]
         self.trunk = m.jnt_bodyid[free]
-        self.floor = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "floor")
-        self.calf_bodies = [mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, f"{leg['name']}_calf")
-                            for leg in self.legs]
 
         # nominal values for domain randomization
         self.nominal_friction = m.geom_friction.copy()
@@ -124,7 +120,7 @@ class ResidualGaitEnv(gym.Env):
         if reward_weights:
             self.w.update(reward_weights)
 
-        obs_dim = 3 + 3 + 4 + 2 + self.nu
+        obs_dim = 3 + 3 + 2 + self.nu
         self.action_space = spaces.Box(-1.0, 1.0, (self.nu,), np.float32)
         self.observation_space = spaces.Box(-np.inf, np.inf, (obs_dim,), np.float32)
         self.rng = np.random.default_rng(seed)
@@ -134,25 +130,13 @@ class ResidualGaitEnv(gym.Env):
         R = self.data.xmat[self.trunk].reshape(3, 3)
         return R.T @ np.array([0.0, 0.0, -1.0])
 
-    def _foot_contacts(self):
-        c = np.zeros(len(self.legs))
-        for i in range(self.data.ncon):
-            con = self.data.contact[i]
-            if self.floor not in (con.geom1, con.geom2):
-                continue
-            other = con.geom2 if con.geom1 == self.floor else con.geom1
-            body = self.model.geom_bodyid[other]
-            if body in self.calf_bodies:
-                c[self.calf_bodies.index(body)] = 1.0
-        return c
-
     def _obs(self):
         grav = self._gravity_body()
         gyro = self.data.qvel[self.root_dof + 3:self.root_dof + 6].copy()
         if self.randomize:
             grav = grav + self.rng.normal(0, 0.02, 3)
             gyro = gyro + self.rng.normal(0, 0.05, 3)
-        obs = np.concatenate([grav, gyro, self._foot_contacts(),
+        obs = np.concatenate([grav, gyro,
                               [np.sin(2 * np.pi * self.phase), np.cos(2 * np.pi * self.phase)],
                               self.prev_action])
         return obs.astype(np.float32)
