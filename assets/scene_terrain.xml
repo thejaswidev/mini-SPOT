@@ -1,0 +1,29 @@
+<!--
+  Mini-SPOT on uneven ground, used to train the RL curve modulation (sim/residual_env.py).
+  The heightfield values are re-randomized every episode by the environment (bumps), so the
+  numbers here only set its size: 8 m x 8 m, 161 x 161 points (5 cm grid), max 0.1 m high.
+  Slopes are simulated by tilting gravity (same physics as standing on an incline).
+-->
+<mujoco model="mini-spot rough terrain">
+  <include file="mini_spot.xml"/>
+
+  <statistic center="0 0 0.1" extent="0.8"/>
+
+  <visual>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="120" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="20 20" reflectance="0"/>
+    <hfield name="terrain" nrow="161" ncol="161" size="4 4 0.1 0.05"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="terrain" type="hfield" hfield="terrain" material="groundplane"/>
+  </worldbody>
+</mujoco>

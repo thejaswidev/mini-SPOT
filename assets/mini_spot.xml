@@ -62,8 +62,8 @@ Mujoco Mini Spot implementation
       <joint axis="0 1 0" damping="2" armature="0.01" frictionloss="0.2"/>
       <position kp="100" forcerange="-33.5 33.5"/>
       <default class="abduction">
-        <!-- <joint axis="1 0 0" damping="1" range="-0.802851 0.802851"/> disabled for now-->
-        <joint axis="1 0 0" damping="1" range="0 0"/>
+        <!-- HAA enabled: range "0 0" would mean "no limits" in MuJoCo, not "locked" -->
+        <joint axis="1 0 0" damping="1" range="-0.802851 0.802851"/>
         <position ctrlrange="-0.802851 0.802851"/>
       </default>
       <default class="hip">

@@ -21,8 +21,8 @@ learning (RL) is being added to find a smoother, better walking style.
 - **Turning** = left legs and right legs push in opposite directions, so the body spins on the spot.
 - **RL, stage 1** = the computer tries thousands of different walking settings (step length, speed,
   knee bend…) and keeps the ones that make the robot walk fast, straight and steady.
-- **RL, stage 2** = a small neural network watches the IMU and foot sensors 50× per second and adds
-  small corrections to every motor, so the robot recovers when it is pushed.
+- **RL, stage 2** = a small neural network watches the IMU 50× per second and slightly reshapes each
+  leg's Bézier curve, so the robot copes with bumps, slopes and pushes.
 
 ---
 
@@ -34,9 +34,10 @@ learning (RL) is being added to find a smoother, better walking style.
 |---|---|---|
 | `sim/gait_controller.py` | **Drive the robot yourself.** Opens a 3D window; you type `walk`, `turn left`, `stop`… | To watch the robot move and test gaits by hand |
 | `sim/rl_ppo.py` | **RL stage 1.** Learns the best 6 walking settings | To improve the base walk |
-| `sim/rl_residual.py` | **RL stage 2.** Trains / tests the correction network (push recovery) | To make the walk robust |
+| `sim/rl_residual.py` | **RL stage 2.** Trains / tests the network that reshapes the curve (terrain, slopes, pushes) | To make the walk robust |
+| `sim/rl_command.py` | **One network for every move (paper architecture).** Train / test / **drive** it: forward, backward, strafe, turn | The main RL from now on |
 | `sim/mujoco_env.py` | **Just show the robot standing.** The simplest viewer | To check the robot model loads |
-| `tests/` | **Automatic checks.** Turning angle, circle size, and the RL stage 2 environment | After changing code, to make sure nothing broke |
+| `tests/` | **Automatic checks.** Turning angle, circle size, and the RL stage 2 environment (terrain, slopes, zero change = original curve) | After changing code, to make sure nothing broke |
 
 ### The files the others use (you don't run these directly)
 
@@ -44,7 +45,10 @@ learning (RL) is being added to find a smoother, better walking style.
 |---|---|
 | `sim/bezier_helpers.py` | **The gait math.** Says where every leg should be at every moment (the smooth leg curves and the timing between legs). Shared by both the manual controller and RL. |
 | `sim/gym_class.py` | **RL stage 1 training ground.** Takes a set of walking settings, lets the robot walk with them for 20 s in the simulation, and gives back a **score**. |
-| `sim/residual_env.py` | **RL stage 2 training ground.** Runs the Bézier gait, adds the network's corrections every 1/50 s, pushes the robot around and scores how well it stays up and keeps walking. |
+| `sim/residual_env.py` | **RL stage 2 training ground.** Runs the Bézier gait, lets the network reshape each leg's curve slightly every 1/50 s, on random bumps and slopes with pushes, and scores how well it keeps walking. |
+| `assets/scene_terrain.xml` | **Bumpy world** for stage 2 (the bumps are re-randomized every episode). |
+| `sim/bezier3d.py` | **The paper's 3D Bézier gait.** Turns a command (forward / sideways speed, turn rate) into foot positions in 3D, and a fast exact IK turns those into the 3 joint angles of each leg. |
+| `sim/command_env.py` | **Training ground for the one-network-for-all-moves policy.** |
 | `3dbezierhelpers.py` | **Alternative gait (from the D²-GMBC paper)** — Bézier curves for the foot position in 3D + inverse kinematics. Standalone demo for now. |
 | `assets/mini_spot.xml` | **The robot itself**: body, legs, motors, sensors, joint limits. |
 | `assets/scene.xml` | **The world**: floor, light, sky. It loads the robot. |
@@ -244,52 +248,105 @@ python -m sim.rl_ppo test --no-render            # without the 3D window
 Training runs 6 simulations in parallel, logs every try to `models/episodes.csv` and saves
 the best settings to `models/best_params.json`.
 
-### RL stage 2: corrections for push recovery (`rl_residual.py`)
+### RL stage 2: the network slightly reshapes the Bézier curve (`rl_residual.py`)
 
-Stage 1 picks the settings **once** — it cannot react if someone pushes the robot. Stage 2 adds a
-small neural network that runs **all the time** (50× per second):
+Stage 1 picks the settings **once** — it cannot react to a push, a bump or a slope. Stage 2
+follows the D²-GMBC paper (Rahme et al. 2020): a small neural network runs **all the time**
+(50× per second) and **bends each leg's Bézier curve a little**:
 
 ```
-  IMU (tilt + rotation speed) ─┬──►  neural network  ──►  small correction (delta) for each of the 12 motors
+  IMU (tilt + rotation speed) ─┬──►  neural network  ──►  5 small curve changes per leg
   gait clock + last action ────┘                                   │
                                                                    ▼
-             Bézier gait (stage 1 settings)  ──►  joint targets  + delta  ──►  servos
+             Bézier gait (stage 1 settings)  ──►  reshaped curve  ──►  joint targets  ──►  servos
 ```
 
-- **Inputs** are only the BNO055 IMU (no foot sensors) plus the gait clock, so the same network can
-  run on the hardware later.
-- **Outputs** are corrections of at most ±0.25 rad, added on top of the Bézier gait — the gait
-  does the walking, the network only fixes mistakes. It can also use the sideways hips.
-- **Training happens only in the simulation**, with random pushes (30–110 N), and with friction,
-  body mass, motor strength, sensor noise and servo delay changed every episode. A network that
-  copes with all of that in simulation has a much better chance on the real robot
-  ("sim-to-real"). Training on the real robot itself would need thousands of falls.
-- **Score:** ➕ walking at ~0.15 m/s, staying upright and at the right height, not falling;
-  ➖ big corrections and jerky corrections (it should stay close to the Bézier gait).
+The 5 changes per leg — all **0 = the original curve**, and all kept small:
+
+| Change | What it does | Paper | Max |
+|---|---|---|---|
+| clearance | lift the foot higher / lower in the swing (step over bumps) | ψ | ±50 % of the lift |
+| depth | in stance, push the foot slightly *into* the ground, or hold it above (finds ground that is lower / higher than expected) | δ | ±0.05 rad |
+| shoulder | shift the whole loop forward / back (lean into a slope) | foot offset x | ±0.1 rad |
+| knee | leg a bit longer / shorter (keep the body level on a slope) | foot offset z | ±0.1 rad |
+| sideways hip | small sideways foot shift (side slopes, sideways pushes) | foot offset y | ±0.1 rad |
+
+- **Inputs** are only the BNO055 IMU plus the gait clock, so the same network can run on the robot.
+- **Training happens only in simulation**, every episode on a new random world
+  (`assets/scene_terrain.xml`): bumps 0–6 cm, uphill/downhill ±15°, side slopes ±8° (pushes
+  are off by default), and different friction, body mass, motor strength, sensor noise and servo delay.
+  Slopes are made by tilting gravity, which is the same physics as standing on an incline.
+- **Score:** ➕ walking at ~0.15 m/s, body level and at the right height above the ground, not
+  falling; ➖ large and jerky curve changes (it should stay close to the Bézier gait).
 
 ```bash
-python -m sim.rl_residual train                     # 3 M steps (~20 min), 8 parallel sims, saves models/residual_ppo.zip
-python -m sim.rl_residual eval                      # Bézier only vs Bézier + network, pushes of 60 / 80 / 100 N
-python -m sim.rl_residual watch --push 80           # watch it in 3D (on a Mac: .venv/bin/mjpython -m sim.rl_residual watch)
+python -m sim.rl_residual train                     # 3 M steps, 8 parallel sims, saves models/residual_ppo.zip
+python -m sim.rl_residual eval                      # Bézier only vs Bézier + network on flat / bumps / slopes / pushes
+python -m sim.rl_residual eval --scenarios uphill15 bumps6 --episodes 20
+python -m sim.rl_residual watch --scenario uphill15 # watch it in 3D (on a Mac: .venv/bin/mjpython -m sim.rl_residual watch ...)
 python -m sim.rl_residual eval --model models/residual_ckpt_2000000_steps   # test a checkpoint (saved every 250 k steps)
 python -m sim.rl_residual train --gait-params models/best_params.json   # build on stage 1's best settings
 ```
 
-Stopping training with Ctrl+C saves to `models/residual_ppo_interrupted` — the finished model is not overwritten.
+Scenarios: `flat`, `bumps4`, `bumps6`, `uphill10`, `uphill15`, `downhill15`, `side8`, `push80`,
+`mixed` (everything at once, like training). Stopping training with Ctrl+C saves to
+`models/residual_ppo_interrupted` — the finished model is not overwritten.
 
-**First result** (3 M training steps ≈ 20 min on a laptop; 20 test episodes of 10 s per row,
-a push every 1.5–3 s, randomized robots not seen in training):
+**Result** (3 M training steps; 16 test episodes of 10 s per row, randomized robots not seen in
+training; distance = forward progress):
 
-| Push | Bézier only | Bézier + network |
+| Scenario | Bézier only | Bézier + network |
 |---|---|---|
-| none | 20/20 stay up, 1.55 m | 20/20 stay up, 1.29 m |
-| 60 N | 20/20, 1.32 m | 18/20, 1.23 m |
-| **80 N** | **4/20**, 0.74 m | **13/20**, 1.01 m |
-| 100 N | 0/20, 0.53 m | 4/20, 0.63 m |
+| flat | 16/16 stay up, 1.57 m | 16/16, 1.28 m |
+| bumps 4 cm | 16/16, 1.32 m | 16/16, 1.09 m |
+| bumps 6 cm | 16/16, 1.11 m | 16/16, 0.73 m |
+| uphill 10° | 16/16, 0.76 m | 16/16, **0.96 m** |
+| **uphill 15°** | **5/16**, −0.16 m | **12/16**, +0.12 m |
+| downhill 15° | 16/16, 1.84 m | 16/16, 1.59 m |
+| side slope 8° | 16/16, 1.22 m | 16/16, 1.20 m |
+| **mixed** (all at once) | **12/16**, 0.78 m | **16/16**, 0.83 m |
 
-The network more than triples survival at 80 N and starts to handle 100 N. It still walks ~15 %
-slower without pushes and occasionally falls at 60 N where the plain gait doesn't — results vary
-between training runs. Next steps: longer training, rougher terrain, tuning the speed reward.
+The network fixes the plain gait's weak spot — steep uphill — and never falls on the mixed
+terrain, but it walks more carefully (15–35 % slower) where the plain gait was already fine.
+
+### One network for all moves (`rl_command.py`) — the paper's architecture
+
+This follows the D²-GMBC paper (Fig. 2) exactly. The Bézier curve now describes **where the foot
+goes in 3D**, and a **command** says which way to go:
+
+```
+  command (forward/back speed, sideways speed, turn rate) ───────────────┐
+                                                                         ▼
+  IMU + gait clock + command ──► network ──► ψ, δ  (curve shape) ──►  3D Bézier gait (sim/bezier3d.py)
+                                        └──► Δf    (small foot offsets) ──(+)──► IK ──► 12 servos
+```
+
+- **One network learns every move:** forward, backward, strafe left / right, turn left / right
+  and stand. During training the command changes every 3–6 s, so it also learns switching.
+- **Network outputs (14), all small, 0 = the plain paper gait:** ψ foot clearance (0.04 ± 0.02 m),
+  δ stance depth (0.005 ± 0.005 m), and a foot offset per leg in x, y, z (± 1.5 cm).
+- **Inputs:** IMU (tilt + rotation speed), gait clock, the command, last action — like the paper.
+- **Trained on** the same random bumps, slopes and robot changes as stage 2.
+- **Score:** ➕ moving at the commanded speed / turn rate, body level, not falling; ➖ big or jerky changes.
+
+The plain paper gait (no network) already follows every command on flat ground — the network's
+job is to keep that working on bumps and slopes:
+
+| Command | Asked | Plain paper gait got |
+|---|---|---|
+| forward / backward | ±0.15 m/s | +0.14 / −0.18 m/s |
+| strafe left / right | ±0.10 m/s | +0.10 / −0.10 m/s |
+| turn left / right | ±0.5 rad/s | +0.57 / −0.58 rad/s |
+
+```bash
+python -m sim.rl_command drive --plain            # drive the plain paper gait in 3D (no training needed)
+python -m sim.rl_command train                    # train the network (5 M steps, 8 parallel sims)
+python -m sim.rl_command drive                    # drive the trained network: w a s d = move, q e = turn, x = stop
+python -m sim.rl_command eval                     # plain gait vs gait + network for every command (flat)
+python -m sim.rl_command eval --scenario mixed    # same on bumps + slopes
+```
+
+On a Mac use `.venv/bin/mjpython` for `drive` and `.venv/bin/python` for the rest.
 
 ---
 
@@ -321,8 +378,8 @@ on the robot later.
 | 3 | Smooth leg curves (Bezier) + walk / trot | ✅ Done |
 | 4 | Turn left / right and walk in circles on command | ✅ Done |
 | 5 | RL stage 1: best walking settings | 🔄 In progress |
-| 6 | RL stage 2: corrections for push recovery (sim) | 🔄 In progress |
-| 7 | Rougher terrain in training (bumps, slopes) | ⬜ Next |
+| 6 | RL stage 2: curve changes for bumps, slopes and pushes (sim) | 🔄 In progress |
+| 7 | Real slopes / stairs in the simulation (not only tilted gravity) | ⬜ Next |
 | 8 | Run it on the real robot (Jetson runs the network, ESP32 the servos) | ⬜ Later |
 
 ---
