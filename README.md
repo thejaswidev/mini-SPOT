@@ -283,13 +283,14 @@ a push every 1.5–3 s, randomized robots not seen in training):
 
 | Push | Bézier only | Bézier + network |
 |---|---|---|
-| none | 20/20 stay up, 1.55 m | 20/20 stay up, 1.26 m |
-| 60 N | 20/20, 1.32 m | 20/20, 1.18 m |
-| **80 N** | **4/20**, 0.74 m | **13/20**, 0.95 m |
-| 100 N | 0/20 | 1/20 |
+| none | 20/20 stay up, 1.55 m | 20/20 stay up, 1.29 m |
+| 60 N | 20/20, 1.32 m | 18/20, 1.23 m |
+| **80 N** | **4/20**, 0.74 m | **13/20**, 1.01 m |
+| 100 N | 0/20, 0.53 m | 4/20, 0.63 m |
 
-The network more than triples survival at 80 N. It still walks ~20 % slower without pushes and
-cannot handle 100 N yet — next steps: longer training, rougher terrain, tuning the speed reward.
+The network more than triples survival at 80 N and starts to handle 100 N. It still walks ~15 %
+slower without pushes and occasionally falls at 60 N where the plain gait doesn't — results vary
+between training runs. Next steps: longer training, rougher terrain, tuning the speed reward.
 
 ---
 
