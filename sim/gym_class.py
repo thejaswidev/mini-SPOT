@@ -60,7 +60,7 @@ class QuadrupedBezierEnv(gym.Env):
         self,
         xml_path=DEFAULT_XML,        # resolved relative to this file, not the cwd
         render_mode="human",  # "human" | None
-        gait="walk",                 # "walk" | "trot"
+        gait="trot",                 # "walk" | "trot"
         swing_fraction=None,         # default 0.33 walk / 0.45 trot
         control_freq=50.0,           # Hz, Bezier target update rate
         policy_dt=0.2,               # s per reward/termination chunk inside an episode
