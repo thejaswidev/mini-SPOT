@@ -91,7 +91,7 @@ TURN_TOLERANCE_DEG = 2.0     # stop this close to the target (the body coasts th
 TURN_SETTLE_S = 0.7          # after stopping, wait this long, re-measure and correct if needed
 TURN_MAX_CORRECTIONS = 3
 
-DEFAULT_CIRCLE_RADIUS = 1.0  # m
+DEFAULT_CIRCLE_RADIUS = 0.6  # m
 MIN_CIRCLE_RADIUS = 0.6      # m, tighter than this the steering maxes out (measured ~0.55 m)
 # Steering amount k: inside legs step with sweep * (1 - k), outside legs with the full sweep.
 # k = 0 walks straight, k = 1 freezes the inside legs, k > 1 makes them step backward.
